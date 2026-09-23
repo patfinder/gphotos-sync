@@ -30,16 +30,21 @@ from google_auth_oauthlib.flow import InstalledAppFlow
 API_BASE = "https://photoslibrary.googleapis.com/v1"
 UPLOAD_URL = f"{API_BASE}/uploads"
 
-# Full read/write scope. Works without Google app verification as long as
-# the OAuth client is in "Testing" mode and you add your own account as a
-# test user (see README.md).
-SCOPES = ["https://www.googleapis.com/auth/photoslibrary"]
+# Since 2025-03-31 the Library API only accepts these scopes; the full
+# `photoslibrary` scope is rejected with 403. They limit this script to
+# albums and media items it created itself (see README.md).
+SCOPES = [
+    "https://www.googleapis.com/auth/photoslibrary.appendonly",
+    "https://www.googleapis.com/auth/photoslibrary.readonly.appcreateddata",
+    "https://www.googleapis.com/auth/photoslibrary.edit.appcreateddata",
+]
 
 DEFAULT_CLIENT_SECRET = "client_secret.json"
 DEFAULT_TOKEN_FILE = "token.json"
 MANIFEST_NAME = ".gphotos_manifest.json"
 
-PAGE_SIZE = 100
+# PAGE_SIZE = 100
+PAGE_SIZE = 20
 
 
 # ---------------------------------------------------------------- auth ----
@@ -77,6 +82,8 @@ def auth_headers(creds):
 # ------------------------------------------------------------- HTTP util --
 
 def api_get(creds, path, params=None):
+    # params['pageSize'] = 5
+    # print(f'____ api_get path: {path}, params: {params}')
     resp = requests.get(f"{API_BASE}{path}", headers=auth_headers(creds), params=params)
     _raise_for_status(resp)
     return resp.json()
@@ -102,21 +109,20 @@ def _raise_for_status(resp):
 # ----------------------------------------------------------- albums ------
 
 def find_album(creds, title):
-    """Look for an album with an exact title match, owned or shared."""
-    for path in ("/albums", "/sharedAlbums"):
-        page_token = None
-        key = "albums" if path == "/albums" else "sharedAlbums"
-        while True:
-            params = {"pageSize": PAGE_SIZE}
-            if page_token:
-                params["pageToken"] = page_token
-            data = api_get(creds, path, params=params)
-            for album in data.get(key, []):
-                if album.get("title") == title:
-                    return album
-            page_token = data.get("nextPageToken")
-            if not page_token:
-                break
+    """Look for an app-created album with an exact title match. Albums made
+    elsewhere (e.g. in the Photos app) are not visible to the API."""
+    page_token = None
+    while True:
+        params = {"pageSize": PAGE_SIZE}
+        if page_token:
+            params["pageToken"] = page_token
+        data = api_get(creds, "/albums", params=params)
+        for album in data.get("albums", []):
+            if album.get("title") == title:
+                return album
+        page_token = data.get("nextPageToken")
+        if not page_token:
+            break
     return None
 
 

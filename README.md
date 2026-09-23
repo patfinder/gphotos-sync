@@ -74,8 +74,11 @@ the command is cheap and idempotent.
 - **Duplicate filenames.** Google Photos allows multiple items with the
   same filename in one album; on download, a colliding name is
   disambiguated by appending part of the media item ID.
-- **Scope/verification.** This uses the full `photoslibrary` scope. For
-  personal use, keep the OAuth consent screen in "Testing" mode with
+- **Scope/verification.** Google removed the full `photoslibrary` scope on
+  2025-03-31, so this uses the `appendonly`, `readonly.appcreateddata` and
+  `edit.appcreateddata` scopes. The script can only see albums and items it
+  created itself; an album made in the Photos app won't be found, and
+  `download` only returns items this script uploaded. For personal use, keep the OAuth consent screen in "Testing" mode with
   yourself as a test user — no Google app review is required. If you
   later want other people to use this, the app would need Google's
   verification process.
