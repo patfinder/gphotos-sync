@@ -42,7 +42,8 @@ python takeout_sync.py --since 2024-06-01 --list --list-format csv \
 ```
 
 The list is sorted oldest first and shows the filename as Google Photos
-displays it. `--until` and `--include-undated` apply here too; undated
+displays it. Rows of type `motion` are the video half of a Live Photo or
+motion photo (see below). `--until` and `--include-undated` apply here too; undated
 items are listed last.
 
 Options: `--until YYYY-MM-DD`, `--layout year-month|year|flat`,
@@ -93,6 +94,18 @@ stop at any time and re-run later. `--yes` skips the per-photo prompt.
   to an album since the export, it would still be deleted. Use a fresh
   export.
 - The date check assumes the Google Photos UI is in English.
+
+### Videos, Live Photos and motion photos
+
+Videos are handled exactly like photos. iPhone **Live Photos** and Pixel
+**motion photos** are one item in Google Photos but two files in Takeout
+(`IMG_1.HEIC` + `IMG_1.MOV`, or `PXL_1.MP.jpg` + `PXL_1.MP`), and only the
+still has a metadata file. The script pairs the video with its still, so
+both get the still's date, the same album decision and the same folder.
+With `--delete`, a Live Photo is only trashed once both halves are safely
+copied. If it can't tell which still a video belongs to (e.g. `IMG_7.HEIC`
+and `IMG_7.JPG` both next to `IMG_7.MOV`), it skips that video and blocks
+deletion of both stills.
 
 For a non-English Takeout, the timeline folders aren't named
 `Photos from YYYY`. Pass e.g. `--year-folder-regex '^Fotos von \d{4}$'`.

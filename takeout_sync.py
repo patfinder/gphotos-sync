@@ -41,8 +41,13 @@ MEDIA_EXT = {
     ".jpg", ".jpeg", ".png", ".gif", ".webp", ".heic", ".heif", ".bmp", ".tif",
     ".tiff", ".dng", ".raw", ".cr2", ".nef", ".arw", ".avif",
     ".mp4", ".mov", ".avi", ".mkv", ".m4v", ".3gp", ".mpg", ".mpeg", ".wmv",
-    ".mts", ".m2ts", ".webm",
+    ".mts", ".m2ts", ".webm", ".mp",
 }
+
+# ".mp" is the video half of a Google Pixel motion photo (PXL_x.MP next to
+# PXL_x.MP.jpg).
+VIDEO_EXT = {".mp4", ".mov", ".avi", ".mkv", ".m4v", ".3gp", ".mpg", ".mpeg",
+             ".wmv", ".mts", ".m2ts", ".webm", ".mp"}
 
 DEFAULT_YEAR_FOLDER_RE = r"^Photos from \d{4}$"
 # Folders that are neither albums nor the main timeline.
@@ -172,6 +177,43 @@ def google_filename(entry, sidecars):
     return split_dup(stem)[0] + ext
 
 
+def is_video(entry):
+    return os.path.splitext(entry.name)[1].lower() in VIDEO_EXT
+
+
+def pair_motion_parts(timeline, sidecars):
+    """Find the video halves of Live Photos / motion photos.
+
+    Takeout exports an iPhone Live Photo as IMG_1.HEIC + IMG_1.MOV and a
+    Pixel motion photo as PXL_1.MP.jpg + PXL_1.MP, with a single sidecar
+    belonging to the still. Online they are ONE item. A video with no
+    sidecar of its own is paired with the still in the same folder whose
+    stem is the same (IMG_1 / IMG_1, IMG_1(1) / IMG_1(1)) or is the video's
+    stem plus ".MP"/".MV" (PXL_1.MP / PXL_1). Ambiguous cases are left
+    unpaired. Returns ({id(video): still}, {id(still): [videos]}); the
+    second maps each still to videos that might belong to it but couldn't be
+    paired, so deleting the still online is blocked unless they're copied.
+    """
+    stills = defaultdict(list)  # (folder, stem_lower) -> [entries with a sidecar]
+    for e in timeline:
+        if not is_video(e) and sidecars.lookup(e) is not None:
+            stills[(e.folder, os.path.splitext(e.name)[0].lower())].append(e)
+    primary_of, unresolved = {}, defaultdict(list)
+    for v in timeline:
+        if not is_video(v) or sidecars.lookup(v) is not None:
+            continue
+        stem = os.path.splitext(v.name)[0].lower()
+        cands = []
+        for key in (stem, stem + ".mp", stem + ".mv"):
+            cands += stills.get((v.folder, key), [])
+        if len(cands) == 1:
+            primary_of[id(v)] = cands[0]
+        else:
+            for c in cands:
+                unresolved[id(c)].append(v)
+    return primary_of, unresolved
+
+
 def taken_time(entry, sidecars):
     """Best-effort capture time (aware UTC datetime) or None."""
     data = sidecars.lookup(entry)
@@ -237,9 +279,6 @@ def copy_entry(entry, target, when):
 
 # ----------------------------------------------------------- listing ----
 
-VIDEO_EXT = {".mp4", ".mov", ".avi", ".mkv", ".m4v", ".3gp", ".mpg", ".mpeg",
-             ".wmv", ".mts", ".m2ts", ".webm"}
-
 
 def human_size(n):
     for unit in ("B", "KB", "MB", "GB"):
@@ -248,18 +287,19 @@ def human_size(n):
         n /= 1024
 
 
-def print_listing(listed, sidecars, fmt):
-    """Print (when, entry) pairs, oldest first, undated at the end."""
+def print_listing(listed, fmt):
+    """Print (when, entry, google_title, kind) tuples, oldest first, undated
+    at the end. kind is photo, video, or motion (the video half of a Live
+    Photo / motion photo; same online item as the photo listed with it)."""
     listed.sort(key=lambda we: (we[0] is None, we[0] or datetime.min.replace(tzinfo=timezone.utc),
-                                we[1].name))
+                                we[2], we[3] == "motion", we[1].name))
     rows = []
-    for when, e in listed:
-        kind = "video" if os.path.splitext(e.name)[1].lower() in VIDEO_EXT else "photo"
+    for when, e, title, kind in listed:
         rows.append({
             "taken": when.astimezone().strftime("%Y-%m-%d %H:%M") if when else "undated",
             "type": kind,
             "size_bytes": e.size,
-            "google_filename": google_filename(e, sidecars),
+            "google_filename": title,
             "takeout_path": f"{e.folder}/{e.name}",
         })
     if fmt == "csv":
@@ -271,11 +311,12 @@ def print_listing(listed, sidecars, fmt):
         w.writerows(rows)
         return
     for r in rows:
-        print(f"{r['taken']:<16}  {r['type']:<5}  {human_size(r['size_bytes']):>9}  "
+        print(f"{r['taken']:<16}  {r['type']:<6}  {human_size(r['size_bytes']):>9}  "
               f"{r['google_filename']}   ({r['takeout_path']})")
     total = sum(r["size_bytes"] for r in rows)
-    n_vid = sum(r["type"] == "video" for r in rows)
-    print(f"{len(rows)} item(s): {len(rows) - n_vid} photo(s), {n_vid} video(s), "
+    n = {k: sum(r["type"] == k for r in rows) for k in ("photo", "video", "motion")}
+    extra = f", {n['motion']} Live Photo/motion video part(s)" if n["motion"] else ""
+    print(f"{len(rows)} file(s): {n['photo']} photo(s), {n['video']} video(s){extra}, "
           f"{human_size(total)} total")
 
 
@@ -376,11 +417,24 @@ def main():
             album_hashes[e.size] = {a.sha256() for a in album_by_size[e.size]}
         return e.sha256() in album_hashes[e.size]
 
+    # Live Photo / motion photo halves are handled as one unit with their still.
+    primary_of, unresolved = pair_motion_parts(timeline, sidecars)
+    parts_of = defaultdict(list)  # id(still) -> [video parts]
+    for e in timeline:
+        if id(e) in primary_of:
+            parts_of[id(primary_of[id(e)])].append(e)
+    if args.verbose and primary_of:
+        info(f"  {len(primary_of)} Live Photo/motion photo video part(s) paired with their still")
+
     ledger = None if args.list else Ledger(dest_root)
     stats = defaultdict(int)
     listed = []
     for e in sorted(timeline, key=lambda x: (x.folder, x.name)):
-        when = taken_time(e, sidecars)
+        primary = primary_of.get(id(e))          # set if e is a video part
+        head = primary or e                      # the item as Google sees it
+        group = [head] + parts_of.get(id(head), [])
+        when = taken_time(head, sidecars)
+        title = google_filename(head, sidecars)
         if when is None:
             if not args.include_undated:
                 stats["undated (skipped)"] += 1
@@ -391,19 +445,23 @@ def main():
             stats["outside date range"] += 1
             continue
 
-        if in_album(e):
+        if any(in_album(x) for x in group):
             stats["in an album"] += 1
             continue
 
         if args.list:
             stats["listed"] += 1
-            listed.append((when, e))
+            listed.append((when, e, title, "motion" if primary else
+                           "video" if is_video(e) else "photo"))
             continue
+
+        link = ({"part_of": primary.sha256()} if primary else
+                {"parts": [p.sha256() for p in parts_of.get(id(e), []) + unresolved.get(id(e), [])]})
 
         target, present = choose_target(dest_dir_for(dest_root, when, args.layout), e)
         if present:
             stats["already copied"] += 1
-            ledger.record_copy(target, e.sha256(), google_filename(e, sidecars), when)
+            ledger.record_copy(target, e.sha256(), title, when, **link)
             continue
 
         stats["copied" if not args.dry_run else "would copy"] += 1
@@ -411,10 +469,10 @@ def main():
         print(f"  {'would copy' if args.dry_run else 'copy'}: {e} [{stamp}] -> {target}")
         if not args.dry_run:
             copy_entry(e, target, when)
-            ledger.record_copy(target, e.sha256(), google_filename(e, sidecars), when)
+            ledger.record_copy(target, e.sha256(), title, when, **link)
 
     if args.list:
-        print_listing(listed, sidecars, args.list_format)
+        print_listing(listed, args.list_format)
         sys.stdout.flush()
 
     info("Summary:")

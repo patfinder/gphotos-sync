@@ -95,6 +95,46 @@ ambiguous pair, a local copy that had changed, y/n/q prompts and
 resuming. `GPHOTOS_BASE_URL` and `GPHOTOS_HEADLESS=1` exist for that
 testing.
 
+### Live Photos and motion photos
+
+Takeout splits these into a still and a video, and only the still has a
+sidecar:
+
+- iPhone: `IMG_1.HEIC` + `IMG_1.MOV`
+- Pixel: `PXL_1.MP.jpg` + `PXL_1.MP` (`.MP` was added to the media types)
+
+Online they are one item. Treating them as separate items had two
+problems: the video half came out undated and wasn't copied, and `--delete`
+would trash the whole item after copying only the still, which is data
+loss.
+
+**Pairing** (`pair_motion_parts`): a video with no sidecar of its own is
+paired with the still in the same folder whose stem matches. The stem can
+be the same (also with `(n)` counters), or the still's stem can be the
+video's stem plus `.MP`/`.MV`. Videos that have their own sidecar are real
+separate items and are never paired, even when a photo shares their stem.
+
+**Handling a pair** as one unit:
+
+- Both halves take the still's date and Google filename.
+- If either half is found in an album folder, the pair counts as in an
+  album.
+- The ledger records `parts` on the still and `part_of` on the video. Only
+  stills are deletion candidates, and trashing one marks its parts deleted
+  too.
+- Deleting a still requires every part to be in the ledger and to match its
+  SHA-256 on disk.
+
+**Ambiguous cases** (two stills with the stem of one video): the video is
+left unpaired, so it's undated and skipped by default. It's listed as a
+part of **every** candidate still, so none of them can be deleted until it
+has been copied (e.g. with `--include-undated`). This is a guess at the
+worst case, and it errs on the side of keeping data online.
+
+**Ledger upgrades**: a later `copied` record for the same SHA-256 replaces
+the earlier one. A ledger written before parts were tracked therefore gets
+the `parts` links on the next run, which always rescans before deleting.
+
 ### Listing only (`--list`)
 
 `--list` uses the same scan and filters as copying, then prints the matches

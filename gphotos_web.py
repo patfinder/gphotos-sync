@@ -141,7 +141,8 @@ def run_deletions(ledger, *, profile_dir, assume_yes, dry_run, verify_local):
 
     stats = {"trashed": 0, "verified (dry run)": 0, "not found online": 0,
              "ambiguous (skipped)": 0, "local copy missing/changed (skipped)": 0,
-             "undated (skipped)": 0, "declined": 0, "errors": 0}
+             "undated (skipped)": 0, "video part not copied (skipped)": 0,
+             "declined": 0, "errors": 0}
     pending = ledger.pending()
     if not pending:
         print("Nothing to delete from Google Photos.")
@@ -158,6 +159,10 @@ def run_deletions(ledger, *, profile_dir, assume_yes, dry_run, verify_local):
             if not verify_local(rec):
                 stats["local copy missing/changed (skipped)"] += 1
                 print(f"  skip, local copy missing or changed: {label}")
+                continue
+            if ledger.missing_parts(rec, verify_local):
+                stats["video part not copied (skipped)"] += 1
+                print(f"  skip, its Live Photo/motion video part isn't safely copied: {label}")
                 continue
             if not rec["taken"]:
                 stats["undated (skipped)"] += 1
@@ -231,18 +236,36 @@ class Ledger:
         with open(self.path, "a") as f:
             f.write(json.dumps(rec) + "\n")
 
-    def record_copy(self, local, sha256, title, taken):
-        if sha256 in self.copied:
-            return
+    def record_copy(self, local, sha256, title, taken, parts=None, part_of=None):
+        """parts: sha256s of a still's Live Photo/motion video halves.
+        part_of: for a video half, its still's sha256. A later record for the
+        same sha256 replaces the earlier one (e.g. ledgers written before
+        parts were tracked get updated on the next run)."""
         rec = {"event": "copied", "local": str(local), "sha256": sha256,
                "title": title, "taken": taken.isoformat() if taken else None}
+        if parts:
+            rec["parts"] = sorted(parts)
+        if part_of:
+            rec["part_of"] = part_of
+        if self.copied.get(sha256) == rec:
+            return
         self.copied[sha256] = rec
         self._append(rec)
 
     def mark_deleted(self, rec, url):
-        self.deleted.add(rec["sha256"])
-        self._append({"event": "deleted", "sha256": rec["sha256"], "url": url,
-                      "at": time.strftime("%Y-%m-%dT%H:%M:%S%z")})
+        # Trashing the still trashes the whole Live Photo, video half included.
+        for sha in [rec["sha256"]] + rec.get("parts", []):
+            self.deleted.add(sha)
+            self._append({"event": "deleted", "sha256": sha, "url": url,
+                          "at": time.strftime("%Y-%m-%dT%H:%M:%S%z")})
+
+    def missing_parts(self, rec, verify_local):
+        """Video halves of `rec` that aren't safely copied."""
+        return [s for s in rec.get("parts", [])
+                if s not in self.copied or not verify_local(self.copied[s])]
 
     def pending(self):
-        return [r for s, r in self.copied.items() if s not in self.deleted]
+        """Online items still to trash. Video halves aren't separate online
+        items: they go together with their still."""
+        return [r for s, r in self.copied.items()
+                if s not in self.deleted and "part_of" not in r]
