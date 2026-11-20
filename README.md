@@ -1,5 +1,42 @@
 # gphotos-sync
 
+Two tools:
+
+- `takeout_sync.py` copies photos that are **in no album** and were taken
+  **after a given date** out of a Google Takeout export.
+- `gphotos_sync.py` syncs a local folder with an album this app created
+  (see its limitations below).
+
+## Photos not in any album, newer than a date (`takeout_sync.py`)
+
+Google's API can't list your whole library any more (see
+`docs/design.md`), so this works from a Takeout export:
+
+1. Go to <https://takeout.google.com>, click **Deselect all**, tick only
+   **Google Photos**, choose `.zip` format, and create the export. Download
+   all of the `takeout-*.zip` parts.
+2. Run the script (it needs only the Python standard library):
+
+```bash
+# Preview
+python takeout_sync.py --since 2024-06-01 --dest ~/Pictures/unalbumed \
+    ~/Downloads/takeout-*.zip --dry-run
+
+# Copy (into ~/Pictures/unalbumed/YYYY/MM/)
+python takeout_sync.py --since 2024-06-01 --dest ~/Pictures/unalbumed \
+    ~/Downloads/takeout-*.zip
+```
+
+Options: `--until YYYY-MM-DD`, `--layout year-month|year|flat`,
+`--include-undated`, `--ignore-folder NAME`, `-v` (lists the album folders
+found and the undated files). An extracted Takeout folder works in place
+of the zips. Re-running with a newer export only copies what's new.
+
+For a non-English Takeout, the timeline folders aren't named
+`Photos from YYYY`. Pass e.g. `--year-folder-regex '^Fotos von \d{4}$'`.
+
+## Album sync (`gphotos_sync.py`)
+
 Sync a local folder with a Google Photos album:
 
 - `download` — pulls album items that aren't in the local folder yet.
