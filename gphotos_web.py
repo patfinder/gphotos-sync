@@ -21,6 +21,57 @@ from datetime import timedelta
 from urllib.parse import quote, urljoin
 
 BASE_URL = os.environ.get("GPHOTOS_BASE_URL", "https://photos.google.com/")
+
+# --- Assumptions about the photos.google.com page, kept in one place. -------
+# `gphotos_browser.py probe` reports how well they match the real site.
+ITEM_LINK = 'a[href*="/photo/"]'                 # a photo/video tile in any grid
+ALBUM_LINK = 'a[href*="/album/"], a[href*="/share/"]'
+ALBUM_PAGES = ["albums", "sharing"]              # own albums, shared albums
+MEDIA_ID_RE = re.compile(r"/photo/([A-Za-z0-9_-]{10,})")
+ALBUM_ID_RE = re.compile(r"/(?:album|share)/([A-Za-z0-9_-]{10,})(?:\?|$|/?$)")
+# Tile labels look like "Photo - Landscape - Nov 5, 2026, 12:34:56 PM".
+TILE_LABEL_RE = re.compile(
+    r"\b(?P<kind>Photo|Video)\b.*?"
+    r"(?P<date>(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.? \d{1,2}, \d{4})"
+    r"(?:,?\s*(?P<time>\d{1,2}:\d{2}(?::\d{2})?)[\s\u202f]*(?P<ampm>[AP]M))?", re.I)
+# The viewer's info panel lists a photo's albums under this heading.
+INFO_ALBUMS_RE = re.compile(r"(?m)^\s*Albums?\s*$")
+# JS: [href, label] for every element matching the selector; the label comes
+# from the link or the first labelled element inside it.
+_LINKS_JS = """els => els.map(e => [e.href,
+    e.getAttribute('aria-label') ||
+    (e.querySelector('[aria-label]') || {getAttribute: () => ''}).getAttribute('aria-label') ||
+    e.innerText || ''])"""
+
+
+def media_id(href):
+    m = MEDIA_ID_RE.search(href)
+    return m.group(1) if m else None
+
+
+def parse_tile_label(label):
+    """(kind, naive local datetime) from a grid tile label, or (None, None)."""
+    from datetime import datetime
+    m = TILE_LABEL_RE.search(label or "")
+    if not m:
+        return None, None
+    date = m.group("date").replace(".", "")
+    try:
+        d = datetime.strptime(date, "%b %d, %Y")
+    except ValueError:
+        try:
+            d = datetime.strptime(date, "%B %d, %Y")
+        except ValueError:
+            return None, None
+    if m.group("time"):
+        t = m.group("time")
+        fmt = "%I:%M:%S %p" if t.count(":") == 2 else "%I:%M %p"
+        try:
+            tt = datetime.strptime(f"{t} {m.group('ampm').upper()}", fmt)
+            d = d.replace(hour=tt.hour, minute=tt.minute, second=tt.second)
+        except ValueError:
+            pass
+    return m.group("kind").lower(), d
 MAX_CANDIDATES = 25
 NAV_TIMEOUT_MS = 30_000
 
@@ -51,10 +102,10 @@ class PhotosWeb:
         try:
             from playwright.sync_api import sync_playwright
         except ImportError:
-            sys.exit("Deleting needs Playwright: pip install playwright "
+            sys.exit("This needs Playwright: pip install playwright "
                      "(then, only if you don't have Google Chrome: playwright install chromium)")
         self._pw = sync_playwright().start()
-        kwargs = dict(user_data_dir=profile_dir, headless=headless,
+        kwargs = dict(user_data_dir=profile_dir, headless=headless, accept_downloads=True,
                       viewport={"width": 1400, "height": 900})
         try:  # Real Chrome is less likely to be refused by Google sign-in.
             self.ctx = self._pw.chromium.launch_persistent_context(channel="chrome", **kwargs)
@@ -129,6 +180,64 @@ class PhotosWeb:
         confirm.last.click()
         confirm.last.wait_for(state="hidden", timeout=15_000)
         self._settle()
+
+    # ---- browsing the library directly (gphotos_browser.py) ----
+
+    def collect(self, url, selector, key_fn, stop=None, max_idle=6, progress=None):
+        """Open `url`, scroll to the end (or until stop(items) is true) and
+        return {key: {"url", "label"}} in page order. The grids are
+        virtualised (tiles are removed once scrolled past), so the visible
+        tiles are harvested after every scroll step."""
+        self.page.goto(url)
+        self._settle()
+        vp = self.page.viewport_size or {"width": 1400, "height": 900}
+        self.page.mouse.move(vp["width"] / 2, vp["height"] / 2)
+        items, idle = {}, 0
+        while idle < max_idle:
+            new = 0
+            for href, label in self.page.eval_on_selector_all(selector, _LINKS_JS):
+                key = key_fn(href)
+                if key and key not in items:
+                    items[key] = {"url": href, "label": label.strip()}
+                    new += 1
+            if progress and new:
+                progress(len(items))
+            if stop and stop(items):
+                break
+            idle = 0 if new else idle + 1
+            self.page.mouse.wheel(0, vp["height"] * 1.5)
+            time.sleep(0.8 if new else 1.5)
+        return items
+
+    def album_urls(self):
+        found = {}
+        for page in ALBUM_PAGES:
+            def key(href):
+                m = ALBUM_ID_RE.search(href)
+                return m.group(1) if m and not media_id(href) else None
+            found.update(self.collect(urljoin(BASE_URL, page), ALBUM_LINK, key, max_idle=3))
+        return found
+
+    def info_shows_albums(self, url):
+        return bool(INFO_ALBUMS_RE.search(self._info_text(url)))
+
+    def download(self, url, tmp_dir):
+        """Download the original of the photo at `url` into tmp_dir.
+        Returns (path, filename Google suggested)."""
+        self.page.goto(url)
+        self._settle()
+        try:
+            with self.page.expect_download(timeout=20_000) as dl:
+                self.page.keyboard.press("Shift+D")  # Google Photos' download shortcut
+        except Exception:
+            with self.page.expect_download(timeout=120_000) as dl:
+                self.page.get_by_role("button", name=re.compile(r"^More options$", re.I)).first.click()
+                self.page.get_by_role("menuitem", name=re.compile(r"^Download", re.I)).first.click()
+        d = dl.value
+        name = d.suggested_filename
+        path = os.path.join(tmp_dir, f".{os.getpid()}-{int(time.time() * 1000)}.part")
+        d.save_as(path)
+        return path, name
 
 
 # ------------------------------------------------------------ driver ----

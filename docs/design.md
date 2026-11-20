@@ -135,6 +135,49 @@ worst case, and it errs on the side of keeping data online.
 the earlier one. A ledger written before parts were tracked therefore gets
 the `parts` links on the next run, which always rescans before deleting.
 
+### Browser-only mode (`gphotos_browser.py`)
+
+This was requested as an alternative to Takeout: it needs no export
+request and no wait, and it's always current.
+
+**Album membership** comes from IDs, not file contents. The script opens
+the `albums` and `sharing` pages, opens every album, and collects each
+item's media key from its `/photo/<id>` link. The library grid is then
+scrolled newest-first, reading the ID, photo/video type and date from each
+tile's label (e.g. `Photo - Landscape - Nov 5, 2026, 12:34:56 PM`).
+Scrolling stops at the first tile older than `--since`, since the grid is
+sorted by date taken.
+
+- **Virtual grids:** the site only keeps the visible tiles in the page,
+  so tiles are collected after every scroll step. Mouse-wheel scrolling
+  over the middle of the window is used because it works whatever element
+  actually scrolls.
+- **Downloads** use Google's own Download (the Shift+D shortcut, with the
+  More options menu as a fallback), so files are the originals.
+- **Deletion** trashes the same ID that was downloaded, after:
+  - verifying the local file's SHA-256;
+  - an independent check that the photo's info panel shows no "Albums"
+    section. This catches an album the scan missed, and also the case
+    where album and library IDs turn out not to match;
+  - a per-item prompt, unless `--yes`.
+  Dry runs perform the info-panel check too, so they predict exactly.
+- **Assumptions** about the page (selectors, URL patterns, label format)
+  are constants at the top of `gphotos_web.py`. `probe` reports how well
+  they match the live site.
+- **State:** `<dest>/.gphotos_browser_state.jsonl` records downloads (ID
+  to local path and SHA-256) and deletions. It's separate from the Takeout
+  ledger because items are keyed by ID instead of content hash.
+- **Testing:** this was tested only against a local mock that reproduces
+  virtualised grids, albums, shared albums, the info panel, downloads and
+  the trash dialog. The cases covered were early stopping, same-name files,
+  the hidden-album guard, a local copy that had changed, prompts, and
+  resuming.
+
+**Trade-offs vs Takeout:** this needs no export and always shows the
+current state. It's slower for big albums and depends on the website's
+layout, which can change. Takeout's album check (by file contents) doesn't
+depend on the site at all.
+
 ### Listing only (`--list`)
 
 `--list` uses the same scan and filters as copying, then prints the matches

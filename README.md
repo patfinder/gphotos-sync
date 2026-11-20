@@ -1,13 +1,62 @@
 # gphotos-sync
 
-Two tools:
+Three tools:
 
-- `takeout_sync.py` copies photos that are **in no album** and were taken
-  **after a given date** out of a Google Takeout export.
+- `gphotos_browser.py` works on Google Photos **directly** through
+  photos.google.com in a browser (no export needed). It lists, downloads
+  and optionally trashes photos/videos that are in no album and newer than
+  a date.
+- `takeout_sync.py` does the same from a Google Takeout export.
 - `gphotos_sync.py` syncs a local folder with an album this app created
   (see its limitations below).
 
-## Photos not in any album, newer than a date (`takeout_sync.py`)
+## Directly from Google Photos, via the browser (`gphotos_browser.py`)
+
+```bash
+pip install playwright        # plus `playwright install chromium` if you have no Google Chrome
+
+python gphotos_browser.py login       # sign in once; kept in .gphotos_browser_profile/
+python gphotos_browser.py probe       # read-only check that it understands the site
+
+# List items in no album, taken on/after 1 Nov 2026 (read-only)
+python gphotos_browser.py list --since 2026-11-01
+python gphotos_browser.py list --since 2026-11-01 --csv > unalbumed.csv
+
+# Download the originals into ~/Pictures/unalbumed/YYYY/MM/
+python gphotos_browser.py download --since 2026-11-01 --dest ~/Pictures/unalbumed
+
+# ...and move each one to Google Photos Trash after its download is verified
+python gphotos_browser.py download --since 2026-11-01 --dest ~/Pictures/unalbumed --delete --dry-run
+python gphotos_browser.py download --since 2026-11-01 --dest ~/Pictures/unalbumed --delete
+```
+
+How it works:
+
+1. It opens every album (yours and shared ones; `--no-shared` ignores
+   shared albums) and records the ID of each item in it.
+2. It scrolls your library from newest to oldest, reading each item's ID,
+   type and date, and stops once it passes `--since`.
+3. The result is the items from step 2 that aren't in any album.
+
+Deletion uses the exact item it downloaded, by ID, so there's no filename
+guessing. Before trashing, it also checks that the downloaded file is intact
+(SHA-256) and that the photo's info panel doesn't list an album, and it asks
+for each one unless you pass `--yes`. Progress is kept in
+`<dest>/.gphotos_browser_state.jsonl`, so re-runs skip what's already done.
+
+**Caveats:**
+
+- This depends on how photos.google.com is laid out. It has been tested
+  only against a mock of the site, so run `probe` first. If it reports
+  `NO` anywhere, the page assumptions at the top of `gphotos_web.py` need
+  adjusting. `probe --dump page.html` saves a page to help with that.
+- Scanning opens every album, so a library with many large albums takes a
+  while.
+- It needs an English Google Photos UI, because it reads dates from tile
+  labels.
+- Live Photos are downloaded however Google's own Download serves them.
+
+## From a Takeout export (`takeout_sync.py`)
 
 Google's API can't list your whole library any more (see
 `docs/design.md`), so this works from a Takeout export:

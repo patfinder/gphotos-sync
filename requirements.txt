@@ -1,5 +1,5 @@
 google-auth-oauthlib>=1.2.0
 google-auth>=2.29.0
 requests>=2.31.0
-# Only needed for takeout_sync.py --delete
+# Only needed for gphotos_browser.py and takeout_sync.py --delete
 playwright>=1.45
