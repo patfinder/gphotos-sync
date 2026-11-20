@@ -4,3 +4,4 @@ venv/
 __pycache__/
 *.pyc
 .gphotos_manifest.json
+.gphotos_browser_profile/

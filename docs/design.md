@@ -50,6 +50,51 @@ as albums (configurable with `--ignore-folder`).
 
 `--since` and `--until` are local-time midnights.
 
+### Deleting from Google Photos after copying (`--delete`, `gphotos_web.py`)
+
+No Google API can delete a library item: the Library API never had a
+delete call, and Takeout is read-only. The options considered were:
+
+- **Browser automation with Playwright (chosen):** the only way to delete
+  automatically. It's fragile against UI changes, so it's built to fail
+  safe.
+- **Writing a list for manual deletion (rejected by the user):** safest,
+  but manual.
+- **Claude driving Chrome once (rejected):** not repeatable.
+
+Takeout gives no Google media-item ID, so a local file has to be matched
+back to the online item. The matching works like this:
+
+- Search by the sidecar `title` (the filename Google shows, without
+  Takeout's `(n)` suffix).
+- Open each hit and require that the info panel shows the exact filename
+  on its own line (`IMG_1.jpg` must not match `IMG_1.jpg.bak`) and the
+  capture date. The date check allows ±1 day because Google shows the
+  photo's own time zone. Several date formats are accepted.
+- **Exactly one** hit must match, or the photo is skipped. This prevents
+  deleting the wrong one of two same-named photos taken on the same day.
+- Undated items are never deleted, because a filename alone is too weak to
+  match on.
+- Before deleting, the local copy is re-hashed and must still match what
+  was copied.
+- Deletion is a move to Trash, which can be restored for 60 days. Each one
+  is confirmed in the terminal unless `--yes` is given.
+
+`<dest>/.takeout_sync_ledger.jsonl` is an append-only log of `copied` and
+`deleted` events (keyed by SHA-256). It makes deletion resumable and
+separate from copying: a later run deletes items copied earlier, which is
+also how an interrupted session continues.
+
+A persistent browser profile (`.gphotos_browser_profile/`, git-ignored)
+keeps the Google sign-in. Real Chrome (`channel="chrome"`) is used when
+it's installed, because Google often refuses sign-in from bundled Chromium.
+
+The flow was tested against a local mock of the site. It covered exact
+matches, a same-name photo with a different date, a substring name, an
+ambiguous pair, a local copy that had changed, y/n/q prompts and
+resuming. `GPHOTOS_BASE_URL` and `GPHOTOS_HEADLESS=1` exist for that
+testing.
+
 ### Other choices
 
 - Takeout `.zip` parts are read in place (no extraction needed), and an
@@ -60,4 +105,4 @@ as albums (configurable with `--ignore-folder`).
 - Re-runs are idempotent: a target with identical content is skipped, and
   a different file with the same name gets `_1`, `_2`, ... added. No state
   file is needed.
-- Copy-only: nothing in Google Photos or in the export is modified.
+- Copy-only unless `--delete` is given. The export itself is never modified.

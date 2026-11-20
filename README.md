@@ -32,6 +32,50 @@ Options: `--until YYYY-MM-DD`, `--layout year-month|year|flat`,
 found and the undated files). An extracted Takeout folder works in place
 of the zips. Re-running with a newer export only copies what's new.
 
+### Deleting the copied photos from Google Photos (`--delete`)
+
+Add `--delete` to move the copied photos to Google Photos **Trash**, where
+they stay restorable for 60 days. Google has no API for deleting photos, so
+this drives photos.google.com in a Chrome window using Playwright:
+
+```bash
+pip install playwright        # plus `playwright install chromium` if you have no Google Chrome
+
+# Recommended first: find and verify each photo online, but delete nothing
+python takeout_sync.py --since 2024-06-01 --dest ~/Pictures/unalbumed \
+    ~/Downloads/takeout-*.zip --delete --dry-run
+
+# Delete, confirming each photo (y / N / a = yes to all / q = quit)
+python takeout_sync.py --since 2024-06-01 --dest ~/Pictures/unalbumed \
+    ~/Downloads/takeout-*.zip --delete
+```
+
+On the first run a browser window opens. Sign in to Google there (the
+sign-in is kept in `.gphotos_browser_profile/`), then press Enter in the
+terminal. For each photo the script:
+
+1. checks that the local copy still exists and matches what was copied
+   (SHA-256);
+2. searches Google Photos for its original filename and opens each hit;
+3. accepts a hit only if its info panel shows that exact filename and the
+   capture date (± 1 day for time zones);
+4. skips the photo if no hit matches, or if more than one does;
+5. skips photos with no known date.
+
+The progress is recorded in `<dest>/.takeout_sync_ledger.jsonl`, so you can
+stop at any time and re-run later. `--yes` skips the per-photo prompt.
+
+**Caveats:**
+
+- The selectors match the photos.google.com page layout that was current
+  when this was written, and it was only tested against a mock site.
+  Always try `--dry-run` first. If Google changes the site, it fails safe:
+  photos are reported as not found, nothing is deleted.
+- Album membership comes from the Takeout snapshot. If you've added a photo
+  to an album since the export, it would still be deleted. Use a fresh
+  export.
+- The date check assumes the Google Photos UI is in English.
+
 For a non-English Takeout, the timeline folders aren't named
 `Photos from YYYY`. Pass e.g. `--year-folder-regex '^Fotos von \d{4}$'`.
 

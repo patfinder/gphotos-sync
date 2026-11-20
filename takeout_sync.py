@@ -17,6 +17,8 @@ Usage:
     python takeout_sync.py --since 2024-06-01 --dest ~/Pictures/unalbumed \\
         ~/Downloads/takeout-*.zip
     python takeout_sync.py --since 2024-06-01 --dest ./out ~/Takeout --dry-run
+    # ...and move what was copied to Google Photos Trash (asks per photo):
+    python takeout_sync.py --since 2024-06-01 --dest ./out ~/Takeout --delete
 """
 import argparse
 import hashlib
@@ -29,6 +31,8 @@ import zipfile
 from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
+
+from gphotos_web import Ledger, run_deletions
 
 MEDIA_EXT = {
     ".jpg", ".jpeg", ".png", ".gif", ".webp", ".heic", ".heif", ".bmp", ".tif",
@@ -155,6 +159,16 @@ class SidecarIndex:
         return None
 
 
+def google_filename(entry, sidecars):
+    """The item's filename as Google Photos shows it: the sidecar "title",
+    else the Takeout name without its "(n)" duplicate counter."""
+    data = sidecars.lookup(entry)
+    if data and data.get("title"):
+        return data["title"]
+    stem, ext = os.path.splitext(entry.name)
+    return split_dup(stem)[0] + ext
+
+
 def taken_time(entry, sidecars):
     """Best-effort capture time (aware UTC datetime) or None."""
     data = sidecars.lookup(entry)
@@ -249,6 +263,14 @@ def build_parser():
     p.add_argument("--ignore-folder", action="append", default=None,
                    help="Folder that is not an album (repeatable). "
                         f"Default: {', '.join(DEFAULT_IGNORE_FOLDERS)}")
+    p.add_argument("--delete", action="store_true",
+                   help="After copying, move the copied photos to Google Photos Trash "
+                        "via a browser (asks before each one unless --yes). With "
+                        "--dry-run, only finds and verifies them online.")
+    p.add_argument("--yes", action="store_true", help="Don't ask before each deletion")
+    p.add_argument("--browser-profile", default=".gphotos_browser_profile",
+                   help="Browser profile dir that keeps the Google sign-in "
+                        "(default: .gphotos_browser_profile)")
     p.add_argument("--dry-run", action="store_true", help="List what would be copied")
     p.add_argument("-v", "--verbose", action="store_true")
     return p
@@ -295,6 +317,7 @@ def main():
             album_hashes[e.size] = {a.sha256() for a in album_by_size[e.size]}
         return e.sha256() in album_hashes[e.size]
 
+    ledger = Ledger(dest_root)
     stats = defaultdict(int)
     for e in sorted(timeline, key=lambda x: (x.folder, x.name)):
         when = taken_time(e, sidecars)
@@ -315,6 +338,7 @@ def main():
         target, present = choose_target(dest_dir_for(dest_root, when, args.layout), e)
         if present:
             stats["already copied"] += 1
+            ledger.record_copy(target, e.sha256(), google_filename(e, sidecars), when)
             continue
 
         stats["copied" if not args.dry_run else "would copy"] += 1
@@ -322,10 +346,24 @@ def main():
         print(f"  {'would copy' if args.dry_run else 'copy'}: {e} [{stamp}] -> {target}")
         if not args.dry_run:
             copy_entry(e, target, when)
+            ledger.record_copy(target, e.sha256(), google_filename(e, sidecars), when)
 
     print("Summary:")
     for k, v in sorted(stats.items()):
         print(f"  {k}: {v}")
+
+    if args.delete:
+        def verify_local(rec):
+            p = Path(rec["local"])
+            return p.is_file() and file_sha256(p) == rec["sha256"]
+
+        dstats = run_deletions(ledger, profile_dir=os.path.abspath(args.browser_profile),
+                               assume_yes=args.yes, dry_run=args.dry_run,
+                               verify_local=verify_local)
+        print("Google Photos deletion summary:")
+        for k, v in dstats.items():
+            if v:
+                print(f"  {k}: {v}")
 
 
 if __name__ == "__main__":
