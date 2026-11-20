@@ -27,6 +27,24 @@ python takeout_sync.py --since 2024-06-01 --dest ~/Pictures/unalbumed \
     ~/Downloads/takeout-*.zip
 ```
 
+To only **list** the matching photos and videos without copying anything
+(no `--dest` needed):
+
+```bash
+python takeout_sync.py --since 2024-06-01 --list ~/Downloads/takeout-*.zip
+# 2024-07-03 05:46  video    12.3 MB  VID_20240703_101010.mp4   (Photos from 2024/VID_20240703_101010.mp4)
+# ...
+# 812 item(s): 790 photo(s), 22 video(s), 4.1 GB total
+
+# As CSV, for a spreadsheet
+python takeout_sync.py --since 2024-06-01 --list --list-format csv \
+    ~/Downloads/takeout-*.zip > unalbumed.csv
+```
+
+The list is sorted oldest first and shows the filename as Google Photos
+displays it. `--until` and `--include-undated` apply here too; undated
+items are listed last.
+
 Options: `--until YYYY-MM-DD`, `--layout year-month|year|flat`,
 `--include-undated`, `--ignore-folder NAME`, `-v` (lists the album folders
 found and the undated files). An extracted Takeout folder works in place

@@ -95,6 +95,22 @@ ambiguous pair, a local copy that had changed, y/n/q prompts and
 resuming. `GPHOTOS_BASE_URL` and `GPHOTOS_HEADLESS=1` exist for that
 testing.
 
+### Listing only (`--list`)
+
+`--list` uses the same scan and filters as copying, then prints the matches
+instead of copying them. It never touches `--dest` or the ledger, and it
+can't be combined with `--delete`. It was added as a flag on the same
+script, not a separate tool, so that the list always matches exactly what a
+copy would select.
+
+- Output is text (default) or CSV (`--list-format csv`). The list goes to
+  stdout and status and summary lines go to stderr, so a redirect gives a
+  clean file.
+- It's sorted by capture date, oldest first, with undated items last.
+- Photo or video is decided by file extension.
+- The name shown is the one Google Photos displays (the sidecar title),
+  with the Takeout path alongside it.
+
 ### Other choices
 
 - Takeout `.zip` parts are read in place (no extraction needed), and an

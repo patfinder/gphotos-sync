@@ -17,6 +17,9 @@ Usage:
     python takeout_sync.py --since 2024-06-01 --dest ~/Pictures/unalbumed \\
         ~/Downloads/takeout-*.zip
     python takeout_sync.py --since 2024-06-01 --dest ./out ~/Takeout --dry-run
+    # Just list what matches (no copying); CSV for a spreadsheet:
+    python takeout_sync.py --since 2024-06-01 --list ~/Downloads/takeout-*.zip
+    python takeout_sync.py --since 2024-06-01 --list --list-format csv takeout-*.zip > list.csv
     # ...and move what was copied to Google Photos Trash (asks per photo):
     python takeout_sync.py --since 2024-06-01 --dest ./out ~/Takeout --delete
 """
@@ -232,6 +235,50 @@ def copy_entry(entry, target, when):
     os.replace(tmp, target)
 
 
+# ----------------------------------------------------------- listing ----
+
+VIDEO_EXT = {".mp4", ".mov", ".avi", ".mkv", ".m4v", ".3gp", ".mpg", ".mpeg",
+             ".wmv", ".mts", ".m2ts", ".webm"}
+
+
+def human_size(n):
+    for unit in ("B", "KB", "MB", "GB"):
+        if n < 1024 or unit == "GB":
+            return f"{n:.0f} {unit}" if unit == "B" else f"{n:.1f} {unit}"
+        n /= 1024
+
+
+def print_listing(listed, sidecars, fmt):
+    """Print (when, entry) pairs, oldest first, undated at the end."""
+    listed.sort(key=lambda we: (we[0] is None, we[0] or datetime.min.replace(tzinfo=timezone.utc),
+                                we[1].name))
+    rows = []
+    for when, e in listed:
+        kind = "video" if os.path.splitext(e.name)[1].lower() in VIDEO_EXT else "photo"
+        rows.append({
+            "taken": when.astimezone().strftime("%Y-%m-%d %H:%M") if when else "undated",
+            "type": kind,
+            "size_bytes": e.size,
+            "google_filename": google_filename(e, sidecars),
+            "takeout_path": f"{e.folder}/{e.name}",
+        })
+    if fmt == "csv":
+        import csv
+        w = csv.DictWriter(sys.stdout, fieldnames=["taken", "type", "size_bytes",
+                                                   "google_filename", "takeout_path"],
+                           extrasaction="ignore")
+        w.writeheader()
+        w.writerows(rows)
+        return
+    for r in rows:
+        print(f"{r['taken']:<16}  {r['type']:<5}  {human_size(r['size_bytes']):>9}  "
+              f"{r['google_filename']}   ({r['takeout_path']})")
+    total = sum(r["size_bytes"] for r in rows)
+    n_vid = sum(r["type"] == "video" for r in rows)
+    print(f"{len(rows)} item(s): {len(rows) - n_vid} photo(s), {n_vid} video(s), "
+          f"{human_size(total)} total")
+
+
 # -------------------------------------------------------------- main ----
 
 def parse_date(s):
@@ -252,7 +299,12 @@ def build_parser():
                    help="Only items taken on or after this date (YYYY-MM-DD, local time)")
     p.add_argument("--until", type=parse_date,
                    help="Only items taken before this date (YYYY-MM-DD, exclusive)")
-    p.add_argument("--dest", required=True, help="Directory to copy photos into")
+    p.add_argument("--dest", help="Directory to copy photos into (not needed with --list)")
+    p.add_argument("--list", action="store_true",
+                   help="Only list the matching photos/videos (newest last); copy nothing")
+    p.add_argument("--list-format", choices=["text", "csv"], default="text",
+                   help="Output format for --list (default: text). Status messages go to "
+                        "stderr, so `--list --list-format csv > out.csv` gives a clean file")
     p.add_argument("--layout", choices=["year-month", "year", "flat"], default="year-month",
                    help="Folder layout under --dest (default: year-month, e.g. 2024/06/)")
     p.add_argument("--include-undated", action="store_true",
@@ -277,10 +329,17 @@ def build_parser():
 
 
 def main():
-    args = build_parser().parse_args()
+    parser = build_parser()
+    args = parser.parse_args()
+    if args.list and args.delete:
+        parser.error("--list and --delete can't be combined")
+    if not args.list and not args.dest:
+        parser.error("--dest is required (unless --list is given)")
+    # In list mode the list goes to stdout and everything else to stderr.
+    info = (lambda *a: print(*a, file=sys.stderr)) if args.list else print
     year_re = re.compile(args.year_folder_regex)
     ignore = {f.lower() for f in (args.ignore_folder or DEFAULT_IGNORE_FOLDERS)}
-    dest_root = Path(args.dest).expanduser()
+    dest_root = Path(args.dest).expanduser() if args.dest else None
 
     timeline, album_files = [], []
     sidecars = SidecarIndex()
@@ -298,11 +357,11 @@ def main():
         sys.exit("No timeline folders found (expected folders like 'Photos from 2024'). "
                  "Check the paths, or set --year-folder-regex for a non-English Takeout.")
     album_names = sorted({e.folder for e in album_files})
-    print(f"Scanned {len(timeline)} timeline item(s) and {len(album_files)} file(s) "
-          f"in {len(album_names)} album folder(s).")
+    info(f"Scanned {len(timeline)} timeline item(s) and {len(album_files)} file(s) "
+         f"in {len(album_names)} album folder(s).")
     if args.verbose:
         for a in album_names:
-            print(f"  album: {a}")
+            info(f"  album: {a}")
 
     # Album membership by content: compare sizes first, hash only on a size hit.
     album_by_size = defaultdict(list)
@@ -317,15 +376,16 @@ def main():
             album_hashes[e.size] = {a.sha256() for a in album_by_size[e.size]}
         return e.sha256() in album_hashes[e.size]
 
-    ledger = Ledger(dest_root)
+    ledger = None if args.list else Ledger(dest_root)
     stats = defaultdict(int)
+    listed = []
     for e in sorted(timeline, key=lambda x: (x.folder, x.name)):
         when = taken_time(e, sidecars)
         if when is None:
             if not args.include_undated:
                 stats["undated (skipped)"] += 1
                 if args.verbose:
-                    print(f"  no date, skipping: {e}")
+                    info(f"  no date, skipping: {e}")
                 continue
         elif when < args.since or (args.until and when >= args.until):
             stats["outside date range"] += 1
@@ -333,6 +393,11 @@ def main():
 
         if in_album(e):
             stats["in an album"] += 1
+            continue
+
+        if args.list:
+            stats["listed"] += 1
+            listed.append((when, e))
             continue
 
         target, present = choose_target(dest_dir_for(dest_root, when, args.layout), e)
@@ -348,9 +413,13 @@ def main():
             copy_entry(e, target, when)
             ledger.record_copy(target, e.sha256(), google_filename(e, sidecars), when)
 
-    print("Summary:")
+    if args.list:
+        print_listing(listed, sidecars, args.list_format)
+        sys.stdout.flush()
+
+    info("Summary:")
     for k, v in sorted(stats.items()):
-        print(f"  {k}: {v}")
+        info(f"  {k}: {v}")
 
     if args.delete:
         def verify_local(rec):
