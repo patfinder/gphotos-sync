@@ -15,7 +15,7 @@ Three tools:
 ```bash
 pip install playwright        # plus `playwright install chromium` if you have no Google Chrome
 
-python gphotos_browser.py login       # sign in once; kept in .gphotos_browser_profile/
+python gphotos_browser.py login       # sign in once in the Chrome window; kept in .gphotos_browser_profile/
 python gphotos_browser.py probe       # read-only check that it understands the site
 
 # List items in no album, taken on/after 1 Nov 2026 (read-only)
@@ -43,6 +43,10 @@ guessing. Before trashing, it also checks that the downloaded file is intact
 (SHA-256) and that the photo's info panel doesn't list an album, and it asks
 for each one unless you pass `--yes`. Progress is kept in
 `<dest>/.gphotos_browser_state.jsonl`, so re-runs skip what's already done.
+
+It needs Google Chrome (or Chromium) installed; set `GPHOTOS_CHROME` to
+its path if it isn't found. Close any Chrome window still using
+`.gphotos_browser_profile/` before running.
 
 **Caveats:**
 

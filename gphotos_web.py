@@ -97,28 +97,89 @@ def _line_re(text):
     return re.compile(r"(?m)^\s*" + re.escape(text) + r"\s*$")
 
 
+def _find_chrome():
+    import shutil
+    for name in (os.environ.get("GPHOTOS_CHROME"), "google-chrome", "google-chrome-stable",
+                 "chromium", "chromium-browser",
+                 "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"):
+        if name and (shutil.which(name) or os.path.isfile(name)):
+            return shutil.which(name) or name
+    return None
+
+
+def _free_port():
+    import socket
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+
+
 class PhotosWeb:
+    """A Chrome window driven by Playwright.
+
+    Google refuses sign-in ("This browser or app may not be secure") in a
+    browser Playwright launched itself, because of its automation flags.
+    So Chrome is started here as an ordinary program with its own profile
+    folder and a local-only debugging port, and Playwright attaches to it
+    (connect_over_cdp). The user signs in to their own account by hand in
+    that window; the sign-in is kept in the profile folder.
+    """
+
     def __init__(self, profile_dir, headless=os.environ.get("GPHOTOS_HEADLESS") == "1"):
         try:
             from playwright.sync_api import sync_playwright
         except ImportError:
-            sys.exit("This needs Playwright: pip install playwright "
-                     "(then, only if you don't have Google Chrome: playwright install chromium)")
+            sys.exit("This needs Playwright: pip install playwright")
+        import subprocess
+        import urllib.request
+
+        chrome = _find_chrome()
+        if not chrome:
+            sys.exit("Google Chrome (or Chromium) wasn't found. Install it, or set "
+                     "GPHOTOS_CHROME to its path.")
+        os.makedirs(profile_dir, exist_ok=True)
+        port = _free_port()
+        cmd = [chrome, f"--user-data-dir={profile_dir}", f"--remote-debugging-port={port}",
+               "--remote-debugging-address=127.0.0.1", "--no-first-run",
+               "--no-default-browser-check", "--window-size=1400,900"]
+        if headless:
+            cmd.append("--headless=new")
+        self._proc = subprocess.Popen(cmd + ["about:blank"], stdout=subprocess.DEVNULL,
+                                      stderr=subprocess.DEVNULL)
+        endpoint = f"http://127.0.0.1:{port}"
+        for _ in range(60):
+            if self._proc.poll() is not None:
+                sys.exit("Chrome exited straight away. Is another Chrome window already using "
+                         f"{profile_dir}? Close it and try again.")
+            try:
+                urllib.request.urlopen(endpoint + "/json/version", timeout=1).read()
+                break
+            except OSError:
+                time.sleep(0.5)
+        else:
+            self._proc.terminate()
+            sys.exit("Couldn't connect to Chrome's debugging port.")
+
         self._pw = sync_playwright().start()
-        kwargs = dict(user_data_dir=profile_dir, headless=headless, accept_downloads=True,
-                      viewport={"width": 1400, "height": 900})
-        try:  # Real Chrome is less likely to be refused by Google sign-in.
-            self.ctx = self._pw.chromium.launch_persistent_context(channel="chrome", **kwargs)
-        except Exception:
-            self.ctx = self._pw.chromium.launch_persistent_context(**kwargs)
+        self.browser = self._pw.chromium.connect_over_cdp(endpoint)
+        self.ctx = self.browser.contexts[0]
         self.page = self.ctx.pages[0] if self.ctx.pages else self.ctx.new_page()
         self.page.set_default_timeout(NAV_TIMEOUT_MS)
 
     def close(self):
         try:
-            self.ctx.close()
-        finally:
+            self.browser.close()
+        except Exception:
+            pass
+        try:
             self._pw.stop()
+        finally:
+            # SIGTERM lets Chrome shut down cleanly and save the sign-in cookies.
+            self._proc.terminate()
+            try:
+                self._proc.wait(timeout=15)
+            except Exception:
+                self._proc.kill()
 
     def ensure_logged_in(self):
         self.page.goto(BASE_URL)

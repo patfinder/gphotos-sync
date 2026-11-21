@@ -161,6 +161,20 @@ sorted by date taken.
     where album and library IDs turn out not to match;
   - a per-item prompt, unless `--yes`.
   Dry runs perform the info-panel check too, so they predict exactly.
+- **Launching Chrome:** Google refuses sign-in ("This browser or app may
+  not be secure") in a Chrome that Playwright launched itself, because of
+  its automation flags. So the script starts Chrome as an ordinary program
+  with a separate profile folder (`.gphotos_browser_profile/`) and a
+  debugging port bound to 127.0.0.1, then attaches with
+  `connect_over_cdp`. The user signs in to their own account by hand in
+  that window.
+  - A separate profile is required: recent Chrome refuses remote debugging
+    on the default profile, and it keeps the script away from the user's
+    everyday browser data.
+  - On exit Chrome gets SIGTERM, so it saves the sign-in cookies.
+  - The user explicitly chose this after the automation-flag sign-in block.
+    The alternatives were Takeout only, or Claude in Chrome in their normal
+    browser.
 - **Assumptions** about the page (selectors, URL patterns, label format)
   are constants at the top of `gphotos_web.py`. `probe` reports how well
   they match the live site.
