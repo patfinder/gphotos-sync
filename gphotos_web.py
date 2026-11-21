@@ -187,33 +187,49 @@ class PhotosWeb:
                   "ERR_TIMED_OUT", "ERR_ADDRESS_UNREACHABLE", "ERR_NETWORK_IO_SUSPENDED")
 
     def goto(self, url, attempts=6):
-        """page.goto, retrying temporary network errors with growing waits
-        (2, 4, 8, 16, 30 s) before giving up with a clear message."""
+        """Open `url`. Waits only for the HTML to be parsed, not the full
+        "load" event: Google Photos keeps streaming in the background, so
+        "load" can take longer than any sensible timeout. Callers wait for
+        the elements they need. Temporary network errors and timeouts are
+        retried with growing waits (2, 4, 8, 16, 30 s), then it gives up
+        with a clear message."""
         for i in range(attempts):
             try:
-                return self.page.goto(url)
+                return self.page.goto(url, wait_until="domcontentloaded", timeout=60_000)
             except Exception as e:
                 msg = str(e)
-                if not any(code in msg for code in self._TRANSIENT):
+                reason = ("timeout" if type(e).__name__ == "TimeoutError" or "Timeout" in msg
+                          else next((c for c in self._TRANSIENT if c in msg), None))
+                if reason is None:
                     raise
                 if i == attempts - 1:
-                    sys.exit(f"Network error loading {url} ({msg.splitlines()[0]}). "
+                    sys.exit(f"Couldn't load {url} ({msg.splitlines()[0]}). "
                              "Check your internet connection and run the command again; "
                              "finished work is saved and won't be repeated.")
                 wait = min(2 ** (i + 1), 30)
-                print(f"  network error ({next(c for c in self._TRANSIENT if c in msg)}), "
-                      f"retrying in {wait}s...", file=sys.stderr, flush=True)
+                print(f"  {reason} loading page, retrying in {wait}s...",
+                      file=sys.stderr, flush=True)
                 time.sleep(wait)
+
+    def page_title(self):
+        """The open page's title without the " - Google Photos" suffix."""
+        try:
+            return re.sub(r"\s*[-–]\s*Google Photos\s*$", "", self.page.title()).strip()
+        except Exception:
+            return ""
 
     def ensure_logged_in(self):
         self.goto(BASE_URL)
         while "accounts.google.com" in self.page.url or "/about" in self.page.url:
-            input("Sign in to Google Photos in the browser window, then press Enter here... ")
+            input("Sign in to Google Photos in the Chrome window, then press Enter here... ")
             self.goto(BASE_URL)
 
     def _settle(self):
+        """Short pause for the page's scripts to draw. Google Photos never
+        goes network-idle, so waiting for that would always hit the
+        timeout; callers wait for the specific elements they need."""
         try:
-            self.page.wait_for_load_state("networkidle", timeout=10_000)
+            self.page.wait_for_load_state("load", timeout=2_000)
         except Exception:
             pass
         time.sleep(1.0)
@@ -229,9 +245,14 @@ class PhotosWeb:
         self.goto(url)
         self._settle()
         # Open the info panel ("i" toggles it; only press if not open yet).
-        if not self.page.get_by_text(re.compile(r"^Details$")).first.is_visible():
+        details = self.page.get_by_text(re.compile(r"^Details$")).first
+        if not details.is_visible():
             self.page.keyboard.press("i")
-            time.sleep(1.0)
+            try:
+                details.wait_for(state="visible", timeout=8_000)
+            except Exception:
+                pass
+            time.sleep(1.0)  # its sections (albums etc.) fill in just after
         return self.page.inner_text("body")
 
     def find_photo(self, filename, when):
@@ -274,6 +295,10 @@ class PhotosWeb:
         virtualised (tiles are removed once scrolled past), so the visible
         tiles are harvested after every scroll step."""
         self.goto(url)
+        try:  # the grid is drawn by script after the HTML arrives
+            self.page.wait_for_selector(selector, timeout=20_000)
+        except Exception:
+            pass  # e.g. an empty album; the scroll loop below copes
         self._settle()
         vp = self.page.viewport_size or {"width": 1400, "height": 900}
         self.page.mouse.move(vp["width"] / 2, vp["height"] / 2)

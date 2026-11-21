@@ -53,8 +53,8 @@ def scan(web, since, until, include_shared=True):
 
     in_album = set()
     for i, (aid, a) in enumerate(albums.items(), 1):
-        title = a["label"].splitlines()[0] if a["label"] else aid
         items = web.collect(a["url"], gw.ITEM_LINK, gw.media_id)
+        title = web.page_title() or (a["label"].splitlines() or [aid])[0] or aid
         in_album.update(items)
         log(f"  [{i}/{len(albums)}] {title}: {len(items)} item(s)")
 
@@ -169,6 +169,11 @@ def cmd_probe(web, args):
     """Report how well the page assumptions in gphotos_web.py match the
     live site, without changing anything."""
     web.ensure_logged_in()
+    try:  # the grid is drawn by script after the page loads
+        web.page.wait_for_selector(gw.ITEM_LINK, timeout=20_000)
+    except Exception:
+        pass
+    time.sleep(1.0)
     tiles = web.page.eval_on_selector_all(gw.ITEM_LINK, gw._LINKS_JS)
     print(f"Library page: {len(tiles)} tile link(s) visible "
           f"(selector {gw.ITEM_LINK!r}).")
@@ -181,12 +186,12 @@ def cmd_probe(web, args):
     albums = web.album_urls()
     print(f"Albums found: {len(albums)}")
     for a in list(albums.values())[:5]:
-        print(f"  {a['url']}  {a['label'][:60]!r}")
+        print(f"  {a['url']}")
     same_ids = None
     if albums:
         first = next(iter(albums.values()))
         items = web.collect(first["url"], gw.ITEM_LINK, gw.media_id, max_idle=2)
-        print(f"First album: {len(items)} item(s)")
+        print(f"First album ({web.page_title() or 'untitled'}): {len(items)} item(s)")
         if items:
             mid = next(iter(items))
             text = web._info_text(urljoin(gw.BASE_URL, "photo/" + mid))
