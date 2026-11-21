@@ -80,6 +80,10 @@ class Stop(Exception):
     pass
 
 
+class NeedLogin(Exception):
+    """The browser profile isn't signed in (or the sign-in expired)."""
+
+
 def _date_strings(when):
     """Ways the info panel might print the capture date (English UI),
     for the day before, of, and after `when` (time-zone slack)."""
@@ -218,9 +222,16 @@ class PhotosWeb:
         except Exception:
             return ""
 
-    def ensure_logged_in(self):
+    def signed_in(self):
+        return not ("accounts.google.com" in self.page.url or "/about" in self.page.url)
+
+    def ensure_logged_in(self, interactive=True):
+        """With interactive=False (scheduled runs) never prompt: raise
+        NeedLogin so the caller can notify the user instead."""
         self.goto(BASE_URL)
-        while "accounts.google.com" in self.page.url or "/about" in self.page.url:
+        while not self.signed_in():
+            if not interactive:
+                raise NeedLogin("Google Photos sign-in is missing or has expired")
             input("Sign in to Google Photos in the Chrome window, then press Enter here... ")
             self.goto(BASE_URL)
 
@@ -241,7 +252,10 @@ class PhotosWeb:
             'a[href*="/photo/"]', "els => [...new Set(els.map(e => e.href))]")
         return hrefs[:MAX_CANDIDATES]
 
-    def _info_text(self, url):
+    def info_panel(self, url):
+        """Open the photo at `url` with its info panel. Returns (loaded, text):
+        loaded is True only if the panel's "Details" section is showing, so a
+        caller can tell "no albums" apart from "panel didn't load"."""
         self.goto(url)
         self._settle()
         # Open the info panel ("i" toggles it; only press if not open yet).
@@ -252,8 +266,12 @@ class PhotosWeb:
                 details.wait_for(state="visible", timeout=8_000)
             except Exception:
                 pass
-            time.sleep(1.0)  # its sections (albums etc.) fill in just after
-        return self.page.inner_text("body")
+            time.sleep(1.5)  # its sections (albums etc.) fill in just after
+        loaded = details.is_visible()
+        return loaded, self.page.inner_text("body")
+
+    def _info_text(self, url):
+        return self.info_panel(url)[1]
 
     def find_photo(self, filename, when):
         """URL of the one photo whose info panel shows `filename` and

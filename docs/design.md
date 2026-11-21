@@ -1,5 +1,96 @@
 # Design notes
 
+## Scheduled backup pipeline (`gphotos_backup.py`)
+
+**Goal (the user's real workflow):** the phone syncs to the MAIN Google
+account. On a schedule, unattended: copy MAIN → computer → BACKUP account,
+then free up MAIN. Photos the user wants to keep in MAIN go in `_Keep It`.
+
+**Decisions (the user chose each recommended option):**
+- **Trash from MAIN** only after the computer copy **and** the
+  backup-account copy are verified. The alternatives were trashing after
+  the computer copy only, or never deleting.
+- **Protection:** any album protects a photo in MAIN, and photos in albums
+  other than `_Keep It` are listed for review. The alternatives were
+  `_Keep It` plus shared albums, or `_Keep It` only. Deleting a photo from
+  a shared album would also remove it for other people.
+- **Schedule:** daily at 02:00, via a systemd user timer with
+  `Persistent=true`, so a missed run happens at next login. The
+  alternatives were every 6 hours, or weekly.
+- **Backup organisation:** library only, no albums.
+
+**Which mechanism does what:**
+- **MAIN account: browser.** It can't be read through the API any more
+  (only app-created items are visible). This reuses `gphotos_web.py`:
+  Chrome is started normally and attached over CDP, which fixed Google's
+  sign-in block.
+- **BACKUP account: the official Library API.** The `appendonly` scope
+  still works after the 2025 changes, and the API is far more robust than
+  driving a website. `readonly.appcreateddata` confirms each upload with
+  `mediaItems.get`. OAuth apps left in "Testing" get refresh tokens that
+  expire after 7 days, so the README tells the user to set the consent
+  screen to "In production". An unverified app is fine for personal use.
+
+**Selection:** every item taken on/after the configured `since`, found by
+scrolling the date-sorted library and stopping at `since`. The user's
+suggestion was adopted: check each recent photo, rather than scanning all
+25 albums. A fixed `since` instead of a moving cursor means late-synced
+photos are still caught. Already-processed items cost only a state lookup
+(plus a panel check for photos that stay in MAIN).
+
+**Deciding "in no album"** uses both sources, so either one can protect a
+photo:
+- (a) the keep album's page: its link is found once by title and cached as
+  a path;
+- (b) the photo's info panel, which must have **loaded** (its "Details"
+  section is visible) and show no "Albums" section. A panel that doesn't
+  load is retried once, then the photo is kept.
+
+A self-test before the first deletion of each run requires (b) to detect
+the album on up to 3 keep-album photos.
+
+**Unattended behaviour:**
+- `ensure_logged_in(interactive=False)` raises `NeedLogin` instead of
+  prompting.
+- Failures are collected as problems, logged, sent as a `notify-send`
+  notification, and give a non-zero exit code, so systemd shows the unit
+  as failed.
+- An `fcntl` lock prevents overlapping runs.
+- With no `DISPLAY`/`WAYLAND_DISPLAY`, Chrome runs headless automatically.
+- Downloads that arrive as `.zip` (possible for Live Photos) are unpacked,
+  using basenames only so nothing can be written outside the archive.
+
+**State** is append-only JSONL in the archive:
+- `downloaded`: per main-account ID → files, SHA-256, size and mtime;
+- `uploaded`: per SHA-256 → backup media ID;
+- `trashed`;
+- `keep_album`;
+- `run` summaries.
+
+Daily runs trust unchanged size and mtime, so big files aren't re-read
+every night. Right before a deletion, every file is fully re-hashed.
+
+**Testing** used a fake main site (virtual grids, albums, info panel,
+downloads, trash dialog, a page that never finishes loading) and a fake
+Library API, driven through `main()` with a dummy token. Covered:
+- a dry run;
+- a full run;
+- a failed upload: only that photo stays in MAIN, and the next run
+  finishes it;
+- a no-op third run;
+- a failed self-test: backups happen, nothing is deleted;
+- a signed-out main account: exit 2 and a notification;
+- a missing backup authorization: nothing deleted;
+- the generated unit files (checked with `systemd-analyze verify`, in a
+  throwaway home folder).
+
+A bug found this way: `State.add` didn't return its record, so every
+download was reported as failed. It was fixed.
+
+The real Google sign-in, the real Library API upload, and the timer on the
+user's machine still need the user to try them.
+
+
 ## Downloading photos that are in no album, newer than a date (`takeout_sync.py`)
 
 **Goal:** copy every Google Photos item that is not in any album and was

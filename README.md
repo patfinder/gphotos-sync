@@ -1,6 +1,80 @@
 # gphotos-sync
 
-Three tools:
+## Scheduled backup: phone → main account → computer → backup account (`gphotos_backup.py`)
+
+```
+Phone ──(Google Photos app sync)──▶ MAIN account
+   1. browser: download originals of everything taken since `since` ──▶ COMPUTER (archive)
+   2. Photos API: upload each file, confirm it arrived                ──▶ BACKUP account
+   3. browser: move to Trash in MAIN, only if in no album and both copies are verified
+```
+
+Photos in **any album** (e.g. `_Keep It`) stay in the main account. They're
+still backed up to the computer and the backup account. Photos kept because
+of an album other than the keep album are listed in the log for review.
+
+### One-time setup
+
+1. **Install:** `pip install -r requirements.txt` (Google Chrome must be
+   installed).
+2. **OAuth client for the backup account:** in the
+   [Google Cloud Console](https://console.cloud.google.com/), enable the
+   **Photos Library API**, create an **OAuth client ID** of type **Desktop
+   app**, and save its JSON as `client_secret.json` here.
+   - On the OAuth consent screen, set **Publishing status: In
+     production**. In "Testing" status Google expires the authorization
+     after 7 days, which would break the schedule every week.
+   - A personal, unverified app works fine; you'll see an "unverified app"
+     warning once when authorizing.
+3. **Settings:** `python gphotos_backup.py init`, then edit `backup.toml`:
+   - `archive_dir`: where the computer copy goes;
+   - `since`: back up photos taken on or after this date;
+   - `keep_album`: defaults to `_Keep It`.
+4. **Sign in to the MAIN account:** `python gphotos_backup.py login-main`.
+   Sign in in the Chrome window that opens, then press Enter.
+5. **Authorize the BACKUP account:** `python gphotos_backup.py
+   auth-backup`. Sign in with the **backup** account in the browser tab.
+6. **Try it:**
+   - `python gphotos_backup.py run --dry-run` lists what would be
+     downloaded and trashed;
+   - `python gphotos_backup.py run` does it;
+   - `python gphotos_backup.py status` shows the totals.
+7. **Schedule it:** `python gphotos_backup.py install-schedule` sets up a
+   daily run at 02:00 (`--time HH:MM` to change). A run missed while the
+   computer was off happens at the next login. `uninstall-schedule`
+   removes it.
+
+### How it stays safe unattended
+
+- **No prompts.** If the main account's sign-in expires, the backup
+  account's authorization fails, Chrome can't start, or an upload or
+  download fails, the run records a **problem** in
+  `<archive>/.gphotos_backup.log` and sends a **desktop notification**.
+  It never guesses.
+- **When a photo is trashed from the main account.** Only when all of
+  these hold:
+  - its files on the computer re-hash to the recorded SHA-256;
+  - every file was uploaded and confirmed in the backup account;
+  - it isn't on the keep album's page;
+  - its info panel loads and lists no album.
+
+  If the panel doesn't load, the photo is kept. Before the first deletion
+  of each run, the album check is tested on photos known to be in the keep
+  album. If that test fails, the run deletes nothing (backups still
+  happen).
+- **Resumable.** Every step is recorded in
+  `<archive>/.gphotos_backup_state.jsonl`, so a failed or interrupted run
+  is completed by the next one. Two runs can't overlap.
+- **Coverage:** each run looks at everything taken since `since`, so
+  photos that reach the main account late are still caught.
+- **Requirements while it runs:** the computer must be on and you must be
+  logged in (the screen can be locked). A Chrome window opens during the
+  run.
+
+## Other tools
+
+These were built along the way; the backup tool above supersedes them for
+the scheduled workflow.
 
 - `gphotos_browser.py` works on Google Photos **directly** through
   photos.google.com in a browser (no export needed). It lists, downloads
