@@ -90,6 +90,28 @@ download was reported as failed. It was fixed.
 The real Google sign-in, the real Library API upload, and the timer on the
 user's machine still need the user to try them.
 
+### Logs to Loki (2026-11-21)
+
+**What:** the run log also goes to the user's local Loki (Grafana stack in
+`fb-post-collector/platform`, `127.0.0.1:3100`), through `loki_url` in
+`backup.toml`.
+
+**Chosen:** push each line directly to Loki's HTTP push API from `Log`,
+with the same label scheme as the user's other apps (`service`, `level`)
+and JSON lines (`{"msg": …}`), so the same Grafana queries work. The run
+summary carries its counts as JSON fields, for per-run panels.
+
+**Alternatives:**
+- A log agent (Promtail/Alloy) tailing `.gphotos_backup.log`: no code, but
+  there's no agent on this machine and it's one more service to keep
+  running. The other apps already push directly.
+- journald → Loki: only covers scheduled runs, and also needs an agent.
+
+**Loki can't break the backup:** 3 s timeout, standard library only (no
+new dependency), and after the first failure pushing stops for the rest
+of the run with one note in the log. The log file stays the full record.
+Dry runs get a `dry_run="true"` label so they're easy to filter out.
+
 
 ## Downloading photos that are in no album, newer than a date (`takeout_sync.py`)
 

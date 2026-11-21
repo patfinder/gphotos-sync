@@ -71,6 +71,28 @@ of an album other than the keep album are listed in the log for review.
   logged in (the screen can be locked). A Chrome window opens during the
   run.
 
+### Logs in Grafana (Loki)
+
+With `loki_url` set in `backup.toml` (the default template uses
+`http://127.0.0.1:3100`), every log line is also pushed to Loki, alongside
+the log file. Labels: `service="gphotos-backup"`, `level="info"` or
+`"error"` (problems), and `dry_run="true"` on dry runs. Each line is JSON
+(`{"msg": …}`); the end-of-run summary also carries `event="summary"` and
+the counts (`downloaded`, `uploaded`, `trashed`, `kept_in_keep_album`, …).
+
+In Grafana → Explore → Loki:
+
+```logql
+{service="gphotos-backup"}                                  # everything
+{service="gphotos-backup", level="error"}                   # problems only
+{service="gphotos-backup"} | json | event="summary"         # one line per run
+sum by (level) (count_over_time({service="gphotos-backup"}[1d]))
+```
+
+If Loki is down, the run carries on: after one failed push it stops
+sending for the rest of that run (the log file still has everything).
+`LOKI_URL` in the environment overrides the setting.
+
 ## Other tools
 
 These were built along the way; the backup tool above supersedes them for

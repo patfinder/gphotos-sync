@@ -36,11 +36,13 @@ import hashlib
 import json
 import mimetypes
 import os
+import re
 import shutil
 import subprocess
 import sys
 import time
 import tomllib
+import urllib.request
 import zipfile
 from datetime import datetime
 from pathlib import Path
@@ -97,6 +99,10 @@ headless = false
 
 # Also notify when a run succeeds (problems are always notified).
 notify_success = false
+
+# Also send the log to Loki (Grafana). Remove or set to "" to turn it off.
+# Lines carry the labels service="gphotos-backup" and level="info"/"error".
+loki_url = "http://127.0.0.1:3100"
 '''
 
 
@@ -130,26 +136,57 @@ class Config:
             sys.exit(f"{self.path}: layout must be year-month, year or flat")
         self.headless = bool(raw.get("headless", False))
         self.notify_success = bool(raw.get("notify_success", False))
+        self.loki_url = str(os.environ.get("LOKI_URL", raw.get("loki_url", ""))).rstrip("/")
 
 
 # ---------------------------------------------------- logging & notify ----
 
+LOKI_SERVICE = "gphotos-backup"
+
+
 class Log:
-    def __init__(self, path=None):
+    """Log file + stdout, and optionally Loki's push API.
+
+    Loki is best effort: a short timeout, and after the first failure it's
+    switched off for the rest of the run, so a stopped Loki costs one
+    timeout, never the backup."""
+
+    def __init__(self, path=None, loki_url="", dry=False):
         self.path = path
         self.problems = []
+        self.loki = f"{loki_url}/loki/api/v1/push" if loki_url else None
+        self.dry = dry
 
-    def __call__(self, msg):
+    def __call__(self, msg, level="info", **fields):
         line = f"{datetime.now():%Y-%m-%d %H:%M:%S}  {msg}"
         print(line, flush=True)
         if self.path:
             self.path.parent.mkdir(parents=True, exist_ok=True)
             with open(self.path, "a") as f:
                 f.write(line + "\n")
+        self._push(msg, level, fields)
 
     def problem(self, msg):
         self.problems.append(msg)
-        self("PROBLEM: " + msg)
+        self("PROBLEM: " + msg, level="error")
+
+    def _push(self, msg, level, fields):
+        if not self.loki:
+            return
+        labels = {"service": LOKI_SERVICE, "level": level}
+        if self.dry:
+            labels["dry_run"] = "true"
+        body = json.dumps({"streams": [{
+            "stream": labels,
+            "values": [[str(time.time_ns()), json.dumps({"msg": msg, **fields})]],
+        }]}).encode()
+        req = urllib.request.Request(self.loki, data=body, method="POST",
+                                     headers={"Content-Type": "application/json"})
+        try:
+            urllib.request.urlopen(req, timeout=3).close()
+        except Exception as e:
+            self.loki = None  # off for the rest of this run
+            self(f"(Loki unreachable, not sending the rest of this run there: {e})")
 
 
 def notify(title, body):
@@ -421,7 +458,7 @@ def album_check_works(web, keep_ids, log, samples=3):
 def cmd_run(cfg, args):
     root = cfg.archive_dir
     root.mkdir(parents=True, exist_ok=True)
-    log = Log(root / LOG_NAME)
+    log = Log(root / LOG_NAME, cfg.loki_url, dry=args.dry_run)
     lock = open(root / LOCK_NAME, "w")
     try:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -572,7 +609,10 @@ def cmd_run(cfg, args):
     finally:
         web.close()
         summary = {k: v for k, v in c.items() if v}
-        log("Summary: " + (", ".join(f"{k}: {v}" for k, v in summary.items()) or "nothing to do"))
+        log("Summary: " + (", ".join(f"{k}: {v}" for k, v in summary.items()) or "nothing to do"),
+            level="error" if log.problems else "info",
+            event="summary", problems=len(log.problems),
+            **{"_".join(re.findall(r"[a-z]+", k)): v for k, v in c.items()})
         for url in review:
             log(f"  review (kept, in an album other than '{cfg.keep_album}'): {url}")
         if not dry:
