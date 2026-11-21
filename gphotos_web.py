@@ -181,11 +181,35 @@ class PhotosWeb:
             except Exception:
                 self._proc.kill()
 
+    # Network errors worth retrying: DNS hiccups, dropped connections, etc.
+    _TRANSIENT = ("ERR_NAME_NOT_RESOLVED", "ERR_INTERNET_DISCONNECTED", "ERR_NETWORK_CHANGED",
+                  "ERR_CONNECTION_RESET", "ERR_CONNECTION_CLOSED", "ERR_CONNECTION_TIMED_OUT",
+                  "ERR_TIMED_OUT", "ERR_ADDRESS_UNREACHABLE", "ERR_NETWORK_IO_SUSPENDED")
+
+    def goto(self, url, attempts=6):
+        """page.goto, retrying temporary network errors with growing waits
+        (2, 4, 8, 16, 30 s) before giving up with a clear message."""
+        for i in range(attempts):
+            try:
+                return self.page.goto(url)
+            except Exception as e:
+                msg = str(e)
+                if not any(code in msg for code in self._TRANSIENT):
+                    raise
+                if i == attempts - 1:
+                    sys.exit(f"Network error loading {url} ({msg.splitlines()[0]}). "
+                             "Check your internet connection and run the command again; "
+                             "finished work is saved and won't be repeated.")
+                wait = min(2 ** (i + 1), 30)
+                print(f"  network error ({next(c for c in self._TRANSIENT if c in msg)}), "
+                      f"retrying in {wait}s...", file=sys.stderr, flush=True)
+                time.sleep(wait)
+
     def ensure_logged_in(self):
-        self.page.goto(BASE_URL)
+        self.goto(BASE_URL)
         while "accounts.google.com" in self.page.url or "/about" in self.page.url:
             input("Sign in to Google Photos in the browser window, then press Enter here... ")
-            self.page.goto(BASE_URL)
+            self.goto(BASE_URL)
 
     def _settle(self):
         try:
@@ -195,14 +219,14 @@ class PhotosWeb:
         time.sleep(1.0)
 
     def _candidates(self, filename):
-        self.page.goto(urljoin(BASE_URL, "search/" + quote(filename, safe="")))
+        self.goto(urljoin(BASE_URL, "search/" + quote(filename, safe="")))
         self._settle()
         hrefs = self.page.eval_on_selector_all(
             'a[href*="/photo/"]', "els => [...new Set(els.map(e => e.href))]")
         return hrefs[:MAX_CANDIDATES]
 
     def _info_text(self, url):
-        self.page.goto(url)
+        self.goto(url)
         self._settle()
         # Open the info panel ("i" toggles it; only press if not open yet).
         if not self.page.get_by_text(re.compile(r"^Details$")).first.is_visible():
@@ -229,7 +253,7 @@ class PhotosWeb:
 
     def trash(self, url):
         """Move the photo at `url` to Trash, then check that it's gone."""
-        self.page.goto(url)
+        self.goto(url)
         self._settle()
         btn = self.page.get_by_role("button", name=re.compile(r"^(Delete|Move to (trash|bin))$", re.I))
         if btn.count() and btn.first.is_visible():
@@ -249,7 +273,7 @@ class PhotosWeb:
         return {key: {"url", "label"}} in page order. The grids are
         virtualised (tiles are removed once scrolled past), so the visible
         tiles are harvested after every scroll step."""
-        self.page.goto(url)
+        self.goto(url)
         self._settle()
         vp = self.page.viewport_size or {"width": 1400, "height": 900}
         self.page.mouse.move(vp["width"] / 2, vp["height"] / 2)
@@ -285,7 +309,7 @@ class PhotosWeb:
     def download(self, url, tmp_dir):
         """Download the original of the photo at `url` into tmp_dir.
         Returns (path, filename Google suggested)."""
-        self.page.goto(url)
+        self.goto(url)
         self._settle()
         try:
             with self.page.expect_download(timeout=20_000) as dl:
