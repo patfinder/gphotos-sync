@@ -51,11 +51,12 @@ def scan(web, since, until, include_shared=True):
         albums = {k: v for k, v in albums.items() if "/share/" not in v["url"]}
     log(f"  {len(albums)} album(s)")
 
-    in_album = set()
+    in_album, members = set(), {}   # members: album title -> [item ids]
     for i, (aid, a) in enumerate(albums.items(), 1):
         items = web.collect(a["url"], gw.ITEM_LINK, gw.media_id)
         title = web.page_title() or (a["label"].splitlines() or [aid])[0] or aid
         in_album.update(items)
+        members.setdefault(title, []).extend(items)
         log(f"  [{i}/{len(albums)}] {title}: {len(items)} item(s)")
 
     log(f"Scanning library back to {since:%Y-%m-%d}...")
@@ -83,7 +84,7 @@ def scan(web, since, until, include_shared=True):
         stats["matched"] += 1
         url = urljoin(gw.BASE_URL, "photo/" + mid)
         matches.append({"id": mid, "url": url, "kind": kind, "taken": taken})
-    return matches, stats
+    return matches, stats, members
 
 
 def print_stats(stats):
@@ -158,6 +159,29 @@ def dest_dir(root, taken, layout):
     return root / f"{taken:%Y}" / f"{taken:%m}"
 
 
+def album_check_works(web, members, samples=3):
+    """Before deleting anything: open up to `samples` photos known to be in
+    albums (from different albums where possible) by their library URL, and
+    require the info-panel check to report an album for every one of them.
+    This proves both that album and library IDs are the same and that the
+    check can see albums; a negative answer later can then be trusted."""
+    picks = []
+    for title, ids in members.items():
+        if ids and len(picks) < samples:
+            picks.append((title, ids[0]))
+    if not picks:
+        log("No album photos to test the album check with; deletion needs at least one album.")
+        return False
+    titles = set(members)
+    log(f"Testing the album safety check on {len(picks)} album photo(s)...")
+    ok = True
+    for title, mid in picks:
+        seen = web.info_shows_albums(urljoin(gw.BASE_URL, "photo/" + mid), titles)
+        log(f"  photo from '{title}': album {'seen' if seen else 'NOT seen'} in its info panel")
+        ok &= seen
+    return ok
+
+
 # ----------------------------------------------------------- commands ----
 
 def cmd_login(web, args):
@@ -192,17 +216,31 @@ def cmd_probe(web, args):
         first = next(iter(albums.values()))
         items = web.collect(first["url"], gw.ITEM_LINK, gw.media_id, max_idle=2)
         print(f"First album ({web.page_title() or 'untitled'}): {len(items)} item(s)")
+        album_title = web.page_title()
         if items:
-            mid = next(iter(items))
-            text = web._info_text(urljoin(gw.BASE_URL, "photo/" + mid))
-            same_ids = bool(gw.INFO_ALBUMS_RE.search(text))
-            print(f"  Its first item opened by library URL; info panel shows an "
-                  f"'Albums' section: {same_ids}")
+            mid, first_item = next(iter(items.items()))
+            # The same item, opened from inside the album and from the library.
+            in_album_text = web._info_text(first_item["url"])
+            lib_url = urljoin(gw.BASE_URL, "photo/" + mid)
+            lib_text = web._info_text(lib_url)
+            lib_landed = gw.media_id(web.page.url) == mid
+            a_lines = {l.strip() for l in in_album_text.splitlines() if l.strip()}
+            l_lines = {l.strip() for l in lib_text.splitlines() if l.strip()}
+            overlap = len(a_lines & l_lines) / max(1, len(a_lines | l_lines))
+            same_ids = web.info_shows_albums(lib_url, [album_title])
+            print(f"  Opening its first item by library URL stayed on that photo: {lib_landed}")
+            print(f"  Album view and library view show the same text: {overlap:.0%} overlap")
+            print(f"  Library view's info panel mentions the album '{album_title}': {same_ids}")
+            print("  Library view page text (first 40 lines; redact anything private):")
+            for line in [l for l in lib_text.splitlines() if l.strip()][:40]:
+                print(f"    | {line.strip()[:100]}")
     print()
     print("Tiles and dates readable:", "yes" if ok_tiles else "NO")
     print("Albums found:", "yes" if albums else "NO (or you have no albums)")
     if same_ids is False:
-        print("Album check in info panel: NOT detected; deletion would rely on IDs only")
+        print("Album check in info panel: NOT detected; --delete will refuse to run")
+    elif same_ids:
+        print("Album check in info panel: works")
     if args.dump:
         Path(args.dump).write_text(web.page.content())
         print(f"Saved the last page's HTML to {args.dump}")
@@ -210,7 +248,7 @@ def cmd_probe(web, args):
 
 def cmd_list(web, args):
     web.ensure_logged_in()
-    matches, stats = scan(web, args.since, args.until, not args.no_shared)
+    matches, stats, _ = scan(web, args.since, args.until, not args.no_shared)
     matches.sort(key=lambda m: m["taken"])
     if args.csv:
         w = csv.writer(sys.stdout)
@@ -231,9 +269,16 @@ def cmd_download(web, args):
     root = Path(args.dest).expanduser()
     root.mkdir(parents=True, exist_ok=True)
     state = State(root)
-    matches, stats = scan(web, args.since, args.until, not args.no_shared)
+    matches, stats, members = scan(web, args.since, args.until, not args.no_shared)
     matches.sort(key=lambda m: m["taken"])
     print_stats(stats)
+    titles = set(members)
+    if args.delete and not album_check_works(web, members):
+        sys.exit("\nDeletion is switched off: the safety check that a photo's info panel "
+                 "shows its albums didn't work on photos known to be in albums, so the "
+                 "script can't confirm an item is album-free before trashing it. Nothing "
+                 "was downloaded or deleted. Run `probe` and send its output, or run "
+                 "without --delete to just download.")
 
     counts = {"downloaded": 0, "already downloaded": 0, "would download": 0,
               "trashed": 0, "would trash": 0, "declined": 0,
@@ -272,7 +317,7 @@ def cmd_download(web, args):
                 print(f"  kept online, local copy missing or changed: {label}")
                 continue
             try:  # second, independent album check (read-only)
-                if web.info_shows_albums(m["url"]):
+                if web.info_shows_albums(m["url"], titles):
                     counts["in an album per info panel (kept)"] += 1
                     print(f"  kept online, its info panel lists an album: {label}")
                     continue

@@ -39,7 +39,8 @@ How it works:
 3. The result is the items from step 2 that aren't in any album.
 
 Deletion uses the exact item it downloaded, by ID, so there's no filename
-guessing. Before trashing, it also checks that the downloaded file is intact
+guessing. Each `--delete` run first tests its album check on a few photos
+known to be in albums, and refuses to delete anything if that test fails. Before trashing, it also checks that the downloaded file is intact
 (SHA-256) and that the photo's info panel doesn't list an album, and it asks
 for each one unless you pass `--yes`. Progress is kept in
 `<dest>/.gphotos_browser_state.jsonl`, so re-runs skip what's already done.

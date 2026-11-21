@@ -325,11 +325,19 @@ class PhotosWeb:
             def key(href):
                 m = ALBUM_ID_RE.search(href)
                 return m.group(1) if m and not media_id(href) else None
-            found.update(self.collect(urljoin(BASE_URL, page), ALBUM_LINK, key, max_idle=3))
+            found.update(self.collect(urljoin(BASE_URL, page), ALBUM_LINK, key, max_idle=6))
         return found
 
-    def info_shows_albums(self, url):
-        return bool(INFO_ALBUMS_RE.search(self._info_text(url)))
+    def info_shows_albums(self, url, album_titles=()):
+        """True if the photo's info panel shows it's in an album: either an
+        "Albums" heading, or a line that is exactly one of `album_titles`
+        (known from the album scan), so it doesn't depend on how the panel
+        labels the section."""
+        text = self._info_text(url)
+        if INFO_ALBUMS_RE.search(text):
+            return True
+        titles = {t.strip() for t in album_titles if t and t.strip()}
+        return any(line.strip() in titles for line in text.splitlines())
 
     def download(self, url, tmp_dir):
         """Download the original of the photo at `url` into tmp_dir.

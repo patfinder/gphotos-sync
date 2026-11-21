@@ -156,9 +156,18 @@ sorted by date taken.
   More options menu as a fallback), so files are the originals.
 - **Deletion** trashes the same ID that was downloaded, after:
   - verifying the local file's SHA-256;
-  - an independent check that the photo's info panel shows no "Albums"
-    section. This catches an album the scan missed, and also the case
-    where album and library IDs turn out not to match;
+  - an independent check that the photo's info panel shows no album: no
+    "Albums" heading, and no line equal to the name of an album found by
+    the scan. Matching on names was added because on the real site the
+    heading wasn't detected; names don't depend on how the panel labels
+    the section. The heading form also catches an album the scan missed.
+    The name form only knows albums the scan found;
+  - a **self-test** at the start of every `--delete` run: up to 3 photos
+    known to be in albums (from different albums) are opened by their
+    library URL, and the check must report an album for each. This proves
+    both that album IDs and library IDs are the same item, and that the
+    check can see albums. If it fails, `--delete` refuses to run, so
+    deletion never relies on IDs alone;
   - a per-item prompt, unless `--yes`.
   Dry runs perform the info-panel check too, so they predict exactly.
 - **Launching Chrome:** Google refuses sign-in ("This browser or app may
