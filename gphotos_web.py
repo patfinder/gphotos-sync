@@ -273,18 +273,31 @@ class PhotosWeb:
         return matches[0] if matches else None
 
     def trash(self, url):
-        """Move the photo at `url` to Trash, then check that it's gone."""
+        """Move the photo at `url` to Trash via the toolbar button and the
+        confirmation dialog.
+
+        On the real site the toolbar button and the dialog's button are both
+        labelled "Move to trash", so the buttons present before clicking are
+        tagged first. Only a new, untagged one counts as the confirmation."""
         self.goto(url)
         self._settle()
-        btn = self.page.get_by_role("button", name=re.compile(r"^(Delete|Move to (trash|bin))$", re.I))
-        if btn.count() and btn.first.is_visible():
-            btn.first.click()
+        tool_re = re.compile(r"^(Delete|Move to (trash|bin))$", re.I)
+        confirm_re = re.compile(r"^Move to (trash|bin)$", re.I)
+        tool = self.page.get_by_role("button", name=tool_re)
+        try:
+            tool.first.wait_for(state="visible", timeout=10_000)
+        except Exception:
+            pass
+        tool.evaluate_all("els => els.forEach(e => e.setAttribute('data-gps-toolbar', '1'))")
+        if tool.count() and tool.first.is_visible():
+            tool.first.click()
         else:
             self.page.keyboard.press("#")  # Google Photos' delete shortcut
-        confirm = self.page.get_by_role("button", name=re.compile(r"^Move to (trash|bin)$", re.I))
-        confirm.last.wait_for(state="visible", timeout=10_000)
-        confirm.last.click()
-        confirm.last.wait_for(state="hidden", timeout=15_000)
+        confirm = (self.page.get_by_role("button", name=confirm_re)
+                   .and_(self.page.locator(":not([data-gps-toolbar])")).last)
+        confirm.wait_for(state="visible", timeout=10_000)
+        confirm.click()
+        confirm.wait_for(state="hidden", timeout=15_000)
         self._settle()
 
     # ---- browsing the library directly (gphotos_browser.py) ----
