@@ -18,9 +18,24 @@ import re
 import sys
 import time
 from datetime import timedelta
-from urllib.parse import quote, urljoin
+from urllib.parse import parse_qsl, quote, urlencode, urljoin, urlparse
 
 BASE_URL = os.environ.get("GPHOTOS_BASE_URL", "https://photos.google.com/")
+# Interface language requested on every page (Google's `hl` parameter). The
+# tools read English labels and dates, whatever the account's own language
+# is. Set GPHOTOS_HL="" to leave pages in the account's language.
+HL = os.environ.get("GPHOTOS_HL", "en")
+
+
+def with_hl(url):
+    """`url` with hl=<HL> added (or replaced) if it's a Google Photos page."""
+    if not HL:
+        return url
+    u = urlparse(url)
+    if u.netloc != urlparse(BASE_URL).netloc:
+        return url
+    q = [(k, v) for k, v in parse_qsl(u.query, keep_blank_values=True) if k != "hl"]
+    return u._replace(query=urlencode(q + [("hl", HL)])).geturl()
 
 # --- Assumptions about the photos.google.com page, kept in one place. -------
 # `gphotos_browser.py probe` reports how well they match the real site.
@@ -197,7 +212,7 @@ class PhotosWeb:
         os.makedirs(profile_dir, exist_ok=True)
         port = _free_port()
         cmd = [chrome, f"--user-data-dir={profile_dir}", f"--remote-debugging-port={port}",
-               "--remote-debugging-address=127.0.0.1", "--no-first-run",
+               "--remote-debugging-address=127.0.0.1", "--no-first-run", "--lang=en-US",
                "--no-default-browser-check", "--window-size=1400,900"]
         if headless:
             cmd.append("--headless=new")
@@ -260,7 +275,8 @@ class PhotosWeb:
         with a clear message."""
         for i in range(attempts):
             try:
-                return self.page.goto(url, wait_until="domcontentloaded", timeout=60_000)
+                return self.page.goto(with_hl(url), wait_until="domcontentloaded",
+                                      timeout=60_000)
             except Exception as e:
                 msg = str(e)
                 reason = ("timeout" if type(e).__name__ == "TimeoutError" or "Timeout" in msg

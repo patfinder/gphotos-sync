@@ -187,6 +187,26 @@ forum report says a copy vanished. So v2 adds an **after-deletion audit**:
 
 `probe` prints all of these from both accounts.
 
+**First real probe (2026-11-22):**
+- **Main account:** the "More options" menu has "Add to album" and the info
+  panel lists `_To Backup`, as assumed. The panel's subtitle under an album
+  is one line, `1 item · Shared · Nov 22`, not separate lines.
+- **Backup account:** the interface is in **Vietnamese** ("Tùy chọn khác",
+  "Lưu"), so no English label matched and the panel "didn't load".
+
+**Fixes:**
+- **Language:** every page is opened with Google's `hl=en` parameter, and
+  Chrome starts with `--lang=en-US`. `GPHOTOS_HL=""` turns this off.
+  - *Chosen over* matching labels in several languages: dates in tile
+    labels would need parsing in each language too.
+  - *Chosen over* asking the user to change the account's language: they
+    may want it in Vietnamese on their phone.
+  - If `hl` turns out to be ignored, switching the backup account's
+    language to English is the fallback.
+- **Subtitles:** a line is treated as a subtitle only if every
+  `·`-separated part is a count, "Shared", "Today"/"Yesterday", a year or
+  a date (range), and no album has that exact title.
+
 ## Downloading photos that are in no album, newer than a date (`takeout_sync.py`)
 
 **Goal:** copy every Google Photos item that is not in any album and was

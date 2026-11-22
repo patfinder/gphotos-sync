@@ -65,9 +65,20 @@ LOG_NAME = ".gphotos_backup_v2.log"
 UNIT = "gphotos-backup-v2"
 AUDIT_DAYS = 30   # re-check photos trashed this recently (Trash keeps them 60 days)
 
-# Lines the info panel may show under an album's name rather than a name
-# itself. Ignored only when no album has that exact title.
-SUBTITLE_RE = re.compile(r"^(Shared|Shared album|\d[\d,]* (items?|photos?|videos?))$", re.I)
+# The info panel shows a line under each album's name, e.g.
+# "1 item · Shared · Nov 22". A line counts as such a subtitle only if every
+# "·"-separated part is a count, "Shared" or a date, and no album has that
+# exact title. Anything else counts as an album name, which keeps the photo.
+_MONTH = r"(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.?"
+_DATE = rf"{_MONTH} \d{{1,2}}(?:, \d{{4}})?"
+SUBTITLE_PART_RE = re.compile(
+    r"^(?:Shared(?: album)?|\d[\d,]* (?:items?|photos?|videos?)|Today|Yesterday|\d{4}"
+    rf"|{_DATE}|{_DATE} ?[–-] ?(?:{_MONTH} )?\d{{1,2}}(?:, \d{{4}})?)$", re.I)
+
+
+def is_subtitle(line):
+    parts = [p.strip(" \u00a0\u202f") for p in re.split(r"[·•]", line)]
+    return bool(parts) and all(p and SUBTITLE_PART_RE.match(p) for p in parts)
 
 CONFIG_TEMPLATE = '''# gphotos_backup_v2.py settings. Relative paths are relative to this file.
 
@@ -202,7 +213,7 @@ def other_albums(lines, transfer, known_titles):
     for line in lines:
         if line == transfer:
             continue
-        if SUBTITLE_RE.match(line) and line not in known_titles:
+        if is_subtitle(line) and line not in known_titles:
             continue
         others.append(line)
     return others
