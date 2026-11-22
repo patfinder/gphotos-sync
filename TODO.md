@@ -28,3 +28,13 @@ Not yet reviewed or prioritised. Notes in *italics* are mine (Claude's), on how 
 - *#3 and #6 partly exist: the album-check self-test turns deletions off when the page doesn't behave as expected, and every run retries unfinished uploads and deletions from the state file.*
 - *#9: the run summary already goes to Loki with its counts, so a Grafana dashboard may cover most of this without building a web UI.*
 - *#10: files read back from the backup account may not be byte-identical to the originals (Google can rewrite metadata), so a restore check might need to compare pixels or EXIF rather than SHA-256.*
+
+## v2: move photos by sharing instead of download + upload
+
+Requested 2026-11-21. Share the items from the main account to the backup account. On the backup account, put the shared items in an album. On the main account, delete the shared items.
+
+*Open questions to settle first (Claude's notes):*
+- *Deleting the original in the main account removes it from anything it was shared through. The backup account must save its own copy first ("Save to library" / add to its own album) before the main copy is deleted. Need to check that the copy it saves survives that deletion.*
+- *Google's Partner Sharing automatically shares the main account's photos (all of them, or from a date) with one partner account, and the partner can auto-save them. It might do most of the sharing step without browser automation.*
+- *Both accounts would be driven through photos.google.com (the API can't share or save another account's items), so two signed-in Chrome profiles.*
+- *Decide whether v2 still keeps a copy on the computer.*
