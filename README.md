@@ -93,6 +93,68 @@ If Loki is down, the run carries on: after one failed push it stops
 sending for the rest of that run (the log file still has everything).
 `LOKI_URL` in the environment overrides the setting.
 
+## Backup v2: move photos by sharing (`gphotos_backup_v2.py`)
+
+```
+Phone ──▶ MAIN account
+   1. download originals of everything taken since `since`  ──▶ COMPUTER (archive)
+   2. add each one to the shared album "_To Backup"
+                     BACKUP account (joined "_To Backup")
+   3. save each shared photo to its library + add it to its own album "From main"
+   4. MAIN: move to Trash, only if the computer copy re-hashes, the copy is on
+      "From main", and the photo is in no album except "_To Backup"
+```
+
+v2 drives **both** accounts through photos.google.com, each in its own
+signed-in Chrome profile. It needs no Google Cloud project, OAuth client or
+API token. It still keeps a computer copy, so the backup account isn't the
+only other copy.
+
+### One-time setup (v2)
+
+1. `python gphotos_backup_v2.py init`, then edit `backup_v2.toml`
+   (`archive_dir`, `since`, album names).
+2. `python gphotos_backup_v2.py login-main`: sign in with the **main**
+   account in the Chrome window that opens.
+3. `python gphotos_backup_v2.py login-backup`: sign in with the **backup**
+   account.
+4. **In the main account** (photos.google.com or the app): create an album
+   called `_To Backup`, share it with the backup account (Share → enter its
+   address). Add one photo to it so the album exists.
+5. **In the backup account:** open the invitation and **join** the album.
+   Create an album of its own called `From main`.
+6. `python gphotos_backup_v2.py check`: confirms both sign-ins and all four
+   albums.
+7. `python gphotos_backup_v2.py probe`: prints the buttons and menus the
+   tool uses, from both accounts. If `save button found` is False or the
+   menu has no "Add to album", the real site differs from what v2 expects;
+   send the output so the tool can be adjusted.
+8. `python gphotos_backup_v2.py run --dry-run`, then `run`.
+9. `python gphotos_backup_v2.py install-schedule` (daily at 02:00). It
+   refuses while the v1 schedule is installed: run
+   `python gphotos_backup.py uninstall-schedule` first.
+
+### How v2 stays safe
+
+- A photo is matched across the accounts by its kind and its date-time to
+  the second (the accounts give it different IDs). Bursts with the same
+  second are counted: the backup album must hold as many copies as main has
+  photos with that time.
+- Every step is confirmed from the album's own page, never from clicks:
+  "added to `_To Backup`" means it's on that album's page; "backed up"
+  means it's on `From main`'s page.
+- The info panel must list `_To Backup` and nothing else (unknown lines
+  count as another album). The album check is self-tested on keep-album
+  photos before the first deletion of each run.
+- **After deletion:** every run checks that photos trashed in the last 30
+  days are still on `From main`. If one is missing, deletions stop and
+  you're notified. It can be restored from the main account's Trash (kept
+  60 days), and the computer copy is still there.
+- Logs: `<archive>/.gphotos_backup_v2.log` and Loki
+  (`service="gphotos-backup"`), plus desktop notifications. State:
+  `<archive>/.gphotos_backup_v2_state.jsonl`. v1 and v2 share a lock, so
+  they never run at the same time.
+
 ## Other tools
 
 These were built along the way; the backup tool above supersedes them for

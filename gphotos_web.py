@@ -36,6 +36,34 @@ TILE_LABEL_RE = re.compile(
     r"(?:,?\s*(?P<time>\d{1,2}:\d{2}(?::\d{2})?)[\s\u202f]*(?P<ampm>[AP]M))?", re.I)
 # The viewer's info panel lists a photo's albums under this heading.
 INFO_ALBUMS_RE = re.compile(r"(?m)^\s*Albums?\s*$")
+# ... and that list ends at the "Details" heading.
+INFO_DETAILS_RE = re.compile(r"^\s*Details\s*$")
+# Viewer controls used to move items between accounts (gphotos_backup_v2.py).
+ADD_MENU_OPENER_RE = re.compile(r"^More options$", re.I)
+ADD_TO_ALBUM_RE = re.compile(r"^Add to album$", re.I)
+ADD_TO_SHARED_ALBUM_RE = re.compile(r"^Add to shared album$", re.I)
+ADD_TO_BUTTON_RE = re.compile(r"^Add to$", re.I)
+ALBUM_KIND_RE = re.compile(r"^(Shared album|Album)$", re.I)
+SAVE_RE = re.compile(r"^(Save|Save to (your )?(library|photos)|Add to (your )?(library|photos))$",
+                     re.I)
+
+
+def info_album_lines(text):
+    """Non-empty lines listed under the info panel's "Albums" heading, up to
+    "Details". None if there's no "Albums" heading at all."""
+    lines = [l.strip() for l in (text or "").splitlines()]
+    start = next((k for k, l in enumerate(lines) if INFO_ALBUMS_RE.match(l)), None)
+    if start is None:
+        return None
+    out = []
+    for l in lines[start + 1:]:
+        if INFO_DETAILS_RE.match(l):
+            break
+        if l:
+            out.append(l)
+    return out
+
+
 # JS: [href, label] for every element matching the selector; the label comes
 # from the link or the first labelled element inside it.
 _LINKS_JS = """els => els.map(e => [e.href,
@@ -118,6 +146,31 @@ def _free_port():
         return s.getsockname()[1]
 
 
+# One Playwright per process, shared by every PhotosWeb (v2 drives two
+# accounts at once; a second sync_playwright().start() fails).
+_PW = None
+_PW_USERS = 0
+
+
+def _playwright():
+    global _PW, _PW_USERS
+    if _PW is None:
+        from playwright.sync_api import sync_playwright
+        _PW = sync_playwright().start()
+    _PW_USERS += 1
+    return _PW
+
+
+def _release_playwright():
+    global _PW, _PW_USERS
+    _PW_USERS -= 1
+    if _PW_USERS <= 0 and _PW is not None:
+        try:
+            _PW.stop()
+        finally:
+            _PW, _PW_USERS = None, 0
+
+
 class PhotosWeb:
     """A Chrome window driven by Playwright.
 
@@ -131,7 +184,7 @@ class PhotosWeb:
 
     def __init__(self, profile_dir, headless=os.environ.get("GPHOTOS_HEADLESS") == "1"):
         try:
-            from playwright.sync_api import sync_playwright
+            import playwright.sync_api  # noqa: F401
         except ImportError:
             sys.exit("This needs Playwright: pip install playwright")
         import subprocess
@@ -164,11 +217,19 @@ class PhotosWeb:
             self._proc.terminate()
             sys.exit("Couldn't connect to Chrome's debugging port.")
 
-        self._pw = sync_playwright().start()
-        self.browser = self._pw.chromium.connect_over_cdp(endpoint)
-        self.ctx = self.browser.contexts[0]
-        self.page = self.ctx.pages[0] if self.ctx.pages else self.ctx.new_page()
-        self.page.set_default_timeout(NAV_TIMEOUT_MS)
+        self._pw = None
+        try:
+            self._pw = _playwright()
+            self.browser = self._pw.chromium.connect_over_cdp(endpoint)
+            self.ctx = self.browser.contexts[0]
+            self.page = self.ctx.pages[0] if self.ctx.pages else self.ctx.new_page()
+            self.page.set_default_timeout(NAV_TIMEOUT_MS)
+        except BaseException:
+            # Don't leave Chrome running: it would lock the profile folder.
+            if self._pw is not None:
+                _release_playwright()
+            self._proc.terminate()
+            raise
 
     def close(self):
         try:
@@ -176,7 +237,7 @@ class PhotosWeb:
         except Exception:
             pass
         try:
-            self._pw.stop()
+            _release_playwright()
         finally:
             # SIGTERM lets Chrome shut down cleanly and save the sign-in cookies.
             self._proc.terminate()
@@ -369,6 +430,79 @@ class PhotosWeb:
             return True
         titles = {t.strip() for t in album_titles if t and t.strip()}
         return any(line.strip() in titles for line in text.splitlines())
+
+    # ---- moving items between accounts (gphotos_backup_v2.py) ----
+
+    def _open_menu_item(self, opener_re, item_re):
+        """Click a toolbar button, then a menu item. False if either isn't there."""
+        btn = self.page.get_by_role("button", name=opener_re).first
+        try:
+            btn.wait_for(state="visible", timeout=6_000)
+            btn.click()
+            item = self.page.get_by_role("menuitem", name=item_re).first
+            item.wait_for(state="visible", timeout=5_000)
+            item.click()
+            return True
+        except Exception:
+            self.page.keyboard.press("Escape")
+            return False
+
+    def add_to_album(self, url, title):
+        """Add the photo at `url` to the album called `title` through the
+        viewer's menu and the album-picker dialog. True once the album was
+        clicked in the picker. The caller confirms the result separately
+        (from the album's page), so a wrong guess about the page only means
+        "not added yet", never a false success."""
+        self.goto(url)
+        self._settle()
+        routes = [
+            (ADD_MENU_OPENER_RE, ADD_TO_ALBUM_RE),
+            (ADD_MENU_OPENER_RE, ADD_TO_SHARED_ALBUM_RE),
+            (ADD_TO_BUTTON_RE, ALBUM_KIND_RE),
+        ]
+        for opener_re, item_re in routes:
+            if not self._open_menu_item(opener_re, item_re):
+                continue
+            dialog = self.page.get_by_role("dialog").last
+            try:
+                dialog.wait_for(state="visible", timeout=8_000)
+                target = dialog.get_by_text(title, exact=True).first
+                target.wait_for(state="visible", timeout=8_000)
+            except Exception:
+                self.page.keyboard.press("Escape")
+                continue
+            target.click()
+            try:
+                dialog.wait_for(state="hidden", timeout=15_000)
+            except Exception:
+                pass
+            self._settle()
+            return True
+        return False
+
+    def save_to_library(self, url):
+        """In an album shared with this account: save the photo at `url` into
+        this account's own library. True if a save button/menu item was
+        clicked, False if none was offered (already saved, or the page isn't
+        what we expect)."""
+        self.goto(url)
+        self._settle()
+        btn = self.page.get_by_role("button", name=SAVE_RE).first
+        try:
+            btn.wait_for(state="visible", timeout=8_000)
+            btn.click()
+        except Exception:
+            if not self._open_menu_item(ADD_MENU_OPENER_RE, SAVE_RE):
+                return False
+        self._settle()
+        return True
+
+    def controls(self):
+        """Labels of the buttons and menu items on the open page (for probes)."""
+        return self.page.eval_on_selector_all(
+            "[role=button], button, [role=menuitem]",
+            "els => [...new Set(els.map(e => (e.getAttribute('aria-label') || e.innerText || '')"
+            ".trim()).filter(Boolean))]")
 
     def download(self, url, tmp_dir):
         """Download the original of the photo at `url` into tmp_dir.

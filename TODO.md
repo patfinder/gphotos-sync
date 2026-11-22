@@ -31,6 +31,8 @@ Not yet reviewed or prioritised. Notes in *italics* are mine (Claude's), on how 
 
 ## v2: move photos by sharing instead of download + upload
 
+**Status:** built as `gphotos_backup_v2.py` (2026-11-21), shared album run by the tool, computer copy kept. Still to do: run `probe` on the real site and adjust labels; first real runs.
+
 Requested 2026-11-21. Share the items from the main account to the backup account. On the backup account, put the shared items in an album. On the main account, delete the shared items.
 
 *Open questions to settle first (Claude's notes):*

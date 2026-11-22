@@ -113,6 +113,80 @@ of the run with one note in the log. The log file stays the full record.
 Dry runs get a `dry_run="true"` label so they're easy to filter out.
 
 
+## Backup v2: moving photos by sharing (`gphotos_backup_v2.py`, 2026-11-21)
+
+**What:** the user asked for a v2 that shares items from the main account
+to the backup account, stores them in an album there, and deletes them
+from main.
+
+**User decisions:**
+- **Shared album run by the tool**, rather than Google's Partner Sharing.
+  Partner Sharing would have shared and saved automatically, and Google
+  documents that saved partner photos survive the original's deletion.
+  The user chose the shared album, which gives the tool control over each
+  step.
+- **Keep the computer copy** as well.
+
+**How:**
+- **Two Chrome profiles,** one per account, each signed in by hand once
+  (same CDP launch as v1). No Library API, so no OAuth client or token.
+- **One-time setup by hand,** not automated: create and share
+  `_To Backup` in main, join it and create `From main` in backup.
+  Creating and sharing albums are one-off UI flows; automating them would
+  add page assumptions that only run once. `check` verifies the setup.
+- **Per run:**
+  1. main: download (v1 code), then "Add to album" → `_To Backup`;
+  2. backup: on the shared album's page, "Save to library", then
+     "Add to album" → `From main`;
+  3. main: trash.
+- **Every result is confirmed from an album page**, not from the clicks.
+  This matters because the menu labels are guesses until `probe` runs on
+  the real site.
+
+**Matching across accounts:** the backup account sees different IDs, so
+items are matched by tile label (kind + date-time to the second).
+- Bursts in the same second are handled by counting: `From main` must hold
+  as many copies with that key as main has photos with it, including ones
+  trashed earlier.
+- Backup-side shared tiles already processed are recorded by their own ID,
+  so a retry doesn't save a burst photo twice.
+- **Known gap:** a photo added to `From main` by hand with the same second
+  would count as a copy.
+
+**Album rule with a shared album:** every backed-up photo is now in an
+album (`_To Backup`), so v1's "Albums heading present → keep" no longer
+works.
+- v2 reads the lines between "Albums" and "Details" and requires that
+  `_To Backup` is listed. That proves the list was read.
+- Any other line counts as another album, except a short list of
+  subtitle-like lines ("Shared", "N items"). Those are ignored only if no
+  album has that exact title.
+- Unknown text therefore keeps the photo.
+
+**Is the saved copy really the backup's own?** Web sources were mixed for
+shared albums: one Google API doc says added items are retained, while a
+forum report says a copy vanished. So v2 adds an **after-deletion audit**:
+- every run checks that photos trashed in the last 30 days are still on
+  `From main`;
+- if any is missing, deletions stop and the user is notified while the
+  original is still in main's Trash (60 days);
+- the computer copy is the last line of defence.
+
+**Alternatives not taken:**
+- Automating album creation and sharing.
+- Matching by filename through each photo's info panel: about one page
+  load per photo in both accounts, against one album scroll.
+- Replacing v1: v1 stays. They share the archive lock, and v2's
+  `install-schedule` refuses while v1's timer is installed.
+
+**Not verified on the real site:**
+- the "Add to album" / "Save to library" labels;
+- whether "Add to album" works on a shared-album photo in the backup
+  account;
+- the info-panel layout for shared albums.
+
+`probe` prints all of these from both accounts.
+
 ## Downloading photos that are in no album, newer than a date (`takeout_sync.py`)
 
 **Goal:** copy every Google Photos item that is not in any album and was

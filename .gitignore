@@ -7,3 +7,5 @@ __pycache__/
 .gphotos_browser_profile/
 backup.toml
 token_backup.json
+backup_v2.toml
+.gphotos_browser_profile_backup/
