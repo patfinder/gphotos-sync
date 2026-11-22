@@ -651,6 +651,17 @@ def cmd_auth_backup(cfg, args):
     if not cfg.client_secret.exists():
         sys.exit(f"Missing {cfg.client_secret}: create an OAuth client (Desktop app) in Google "
                  "Cloud Console and save its JSON there. See README.")
+    try:
+        kind = next(iter(json.loads(cfg.client_secret.read_text())), "")
+    except (ValueError, OSError) as e:
+        sys.exit(f"{cfg.client_secret} isn't a valid OAuth client file: {e}")
+    if kind != "installed":
+        # A "Web application" client only accepts registered redirect URIs, so
+        # the local-server sign-in fails with Error 400: redirect_uri_mismatch.
+        sys.exit(f"{cfg.client_secret} is a '{kind}' OAuth client; this needs a 'Desktop app' one.\n"
+                 "Google Cloud Console → APIs & Services → Credentials → Create credentials → "
+                 "OAuth client ID → Application type: Desktop app → Download JSON, and save it as "
+                 f"{cfg.client_secret}.")
     print("A browser tab will open: sign in with the BACKUP account (not the main one).")
     flow = InstalledAppFlow.from_client_secrets_file(str(cfg.client_secret), BACKUP_SCOPES)
     creds = flow.run_local_server(port=0, prompt="consent select_account")
