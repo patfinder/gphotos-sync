@@ -207,6 +207,22 @@ forum report says a copy vanished. So v2 adds an **after-deletion audit**:
   `·`-separated part is a count, "Shared", "Today"/"Yesterday", a year or
   a date (range), and no album has that exact title.
 
+**First real run (2026-11-26):**
+- **Picker click:** "Add to album" in main timed out. The picker's title
+  text was found, but the click landed on the row (`<li role=option
+  aria-label="_To Backup · 71 items · Shared">`), which takes the click.
+  The tool now clicks the `option` whose name starts with the album title,
+  falling back to the text.
+- **Whole shared album is copied:** `_To Backup` already held 71 photos
+  taken before `since` (added by hand), and v2 skipped them because they
+  weren't in this run's date range. Now everything in the shared album is
+  copied to `From main`. That only adds copies; deletion from main still
+  covers only photos taken since `since`.
+- **First save is checked before the rest:** the backup-side
+  save/add-to-album flow hadn't run on the real site. Its first result is
+  confirmed on `From main` before the others; if it's missing, the step
+  stops with one warning instead of trying every photo.
+
 ## Downloading photos that are in no album, newer than a date (`takeout_sync.py`)
 
 **Goal:** copy every Google Photos item that is not in any album and was

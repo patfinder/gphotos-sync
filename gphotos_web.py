@@ -482,7 +482,10 @@ class PhotosWeb:
             dialog = self.page.get_by_role("dialog").last
             try:
                 dialog.wait_for(state="visible", timeout=8_000)
-                target = dialog.get_by_text(title, exact=True).first
+                # Click the album's row (role=option): on the real site the
+                # row takes the click, not the title text inside it.
+                row = dialog.get_by_role("option", name=re.compile(rf"^{re.escape(title)}(\s*·|$)"))
+                target = row.or_(dialog.get_by_text(title, exact=True)).first
                 target.wait_for(state="visible", timeout=8_000)
             except Exception:
                 self.page.keyboard.press("Escape")

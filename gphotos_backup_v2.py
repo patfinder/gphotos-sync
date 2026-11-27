@@ -375,17 +375,17 @@ def cmd_run(cfg, args):
                     label_key(t["label"])
                     for t in backup.collect(b_own, gw.ITEM_LINK, gw.media_id).values())
                 tiles = backup.collect(b_shared, gw.ITEM_LINK, gw.media_id)
-                # Copies the backup album should hold per key: this run's shared
-                # photos plus the ones trashed earlier (already copied).
-                wanted = Counter(i["key"] for i in items if i["id"] in transfer_ids)
+                # Copies the backup album should hold per key: everything in the
+                # shared album (whatever its date) plus the photos trashed
+                # earlier, which have left the shared album but were copied.
+                wanted = Counter(label_key(t["label"]) for t in tiles.values())
                 wanted.update(r["key"] for r in state.trashed.values() if r.get("key"))
                 tried = defaultdict(list)     # key -> shared tile IDs worked on
+                canary = None                 # first save is confirmed before the rest
                 for tid, t in tiles.items():
                     key = label_key(t["label"])
-                    if not key or tid in state.saved or backup_counts[key] >= wanted[key] > 0:
+                    if not key or tid in state.saved or backup_counts[key] >= wanted[key]:
                         continue
-                    if not wanted[key]:
-                        continue  # not one of this run's photos (e.g. added by hand)
                     if dry:
                         c["would save"] += 1
                         continue
@@ -396,6 +396,18 @@ def cmd_run(cfg, args):
                     except Exception as e:
                         log.problem(f"saving a shared photo ({key}) in the backup account "
                                     f"failed: {e}")
+                    if canary is None and tried:
+                        canary = Counter(
+                            label_key(x["label"])
+                            for x in backup.collect(b_own, gw.ITEM_LINK, gw.media_id).values())
+                        if canary[key] <= backup_counts[key]:
+                            log.problem(f"The first photo saved in the backup account didn't "
+                                        f"appear on '{cfg.backup_album}', so the rest were not "
+                                        "tried. The backup account's page may differ from what "
+                                        "the tool expects: run `python gphotos_backup_v2.py "
+                                        "probe` and send the output.")
+                            tried.clear()
+                            break
                 if tried:
                     before = backup_counts
                     backup_counts = Counter(
