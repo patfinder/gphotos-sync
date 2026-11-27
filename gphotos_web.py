@@ -59,6 +59,8 @@ ADD_TO_ALBUM_RE = re.compile(r"^Add to album$", re.I)
 ADD_TO_SHARED_ALBUM_RE = re.compile(r"^Add to shared album$", re.I)
 ADD_TO_BUTTON_RE = re.compile(r"^Add to$", re.I)
 ALBUM_KIND_RE = re.compile(r"^(Shared album|Album)$", re.I)
+SAVE_PHOTOS_RE = re.compile(r"^Save photos$", re.I)       # shared album page, with tiles ticked
+CONFIRM_SAVE_RE = re.compile(r"^(Save|Save photos|OK|Done|Continue)$", re.I)
 SAVE_RE = re.compile(r"^(Save|Save to (your )?(library|photos)|Add to (your )?(library|photos))$",
                      re.I)
 
@@ -477,27 +479,118 @@ class PhotosWeb:
             (ADD_TO_BUTTON_RE, ALBUM_KIND_RE),
         ]
         for opener_re, item_re in routes:
-            if not self._open_menu_item(opener_re, item_re):
-                continue
-            dialog = self.page.get_by_role("dialog").last
-            try:
-                dialog.wait_for(state="visible", timeout=8_000)
-                # Click the album's row (role=option): on the real site the
-                # row takes the click, not the title text inside it.
-                row = dialog.get_by_role("option", name=re.compile(rf"^{re.escape(title)}(\s*·|$)"))
-                target = row.or_(dialog.get_by_text(title, exact=True)).first
-                target.wait_for(state="visible", timeout=8_000)
-            except Exception:
-                self.page.keyboard.press("Escape")
-                continue
-            target.click()
-            try:
-                dialog.wait_for(state="hidden", timeout=15_000)
-            except Exception:
-                pass
-            self._settle()
-            return True
+            if self._open_menu_item(opener_re, item_re) and self._pick_album(title):
+                return True
         return False
+
+    def _pick_album(self, title):
+        """In the open album-picker dialog, click the album `title`."""
+        dialog = self.page.get_by_role("dialog").last
+        try:
+            dialog.wait_for(state="visible", timeout=8_000)
+            # Click the album's row (role=option): on the real site the row
+            # takes the click, not the title text inside it.
+            row = dialog.get_by_role("option", name=re.compile(rf"^{re.escape(title)}(\s*·|$)"))
+            target = row.or_(dialog.get_by_text(title, exact=True)).first
+            target.wait_for(state="visible", timeout=8_000)
+        except Exception:
+            self.page.keyboard.press("Escape")
+            return False
+        target.click()
+        try:
+            dialog.wait_for(state="hidden", timeout=15_000)
+        except Exception:
+            pass
+        self._settle()
+        return True
+
+    # Tiles on an album page carry a checkbox labelled like the tile. JS: for
+    # each checkbox, the ID of the photo link in the same tile (walking up to
+    # the nearest ancestor that holds a photo link), whether that link's
+    # label matches the checkbox's, and aria-checked. Tags each checkbox
+    # with data-gps-id so it can be clicked.
+    _TILE_CHECKBOX_JS = r"""els => els.map(cb => {
+        let n = cb, a = null;
+        for (let k = 0; k < 8 && n && !a; k++) {
+            if (n.matches && n.matches('a[href*="/photo/"]')) { a = n; break; }
+            n = n.parentElement;
+            a = n && n.querySelector('a[href*="/photo/"]');
+        }
+        const m = a && a.href.match(/\/photo\/([A-Za-z0-9_-]{10,})/);
+        if (!m) return null;
+        const lab = a.getAttribute('aria-label') ||
+            (a.querySelector('[aria-label]') || {getAttribute: () => ''}).getAttribute('aria-label') || '';
+        cb.setAttribute('data-gps-id', m[1]);
+        return [m[1], cb.getAttribute('aria-checked') === 'true',
+                (cb.getAttribute('aria-label') || '') === lab];
+    }).filter(Boolean)"""
+
+    def select_items(self, url, ids, max_idle=6):
+        """Open the album at `url` and tick the tiles whose photo IDs are in
+        `ids`, scrolling as needed. Returns the set of IDs ticked."""
+        ids = set(ids)
+        self.goto(url)
+        try:
+            self.page.wait_for_selector(ITEM_LINK, timeout=20_000)
+        except Exception:
+            return set()
+        self._settle()
+        vp = self.page.viewport_size or {"width": 1400, "height": 900}
+        chosen, attempted, idle = set(), set(), 0
+        while idle < max_idle and chosen != ids:
+            new = 0
+            while True:
+                # Re-read after every click: ticking can redraw the tiles.
+                rows = self.page.eval_on_selector_all("[role=checkbox]", self._TILE_CHECKBOX_JS)
+                for mid, checked, same_label in rows:
+                    if mid in ids and checked and same_label and mid not in chosen:
+                        chosen.add(mid)   # counted only once the page shows it ticked
+                        new += 1
+                nxt = next((mid for mid, checked, same_label in rows
+                            if mid in ids and same_label and not checked
+                            and mid not in attempted), None)
+                if nxt is None:
+                    break
+                attempted.add(nxt)
+                box = self.page.locator(f'[role=checkbox][data-gps-id="{nxt}"]').first
+                try:
+                    box.hover(timeout=3_000)
+                    box.click(timeout=3_000)
+                    time.sleep(0.3)
+                except Exception:
+                    pass
+            idle = 0 if new else idle + 1
+            self.page.mouse.move(vp["width"] / 2, vp["height"] / 2)
+            self.page.mouse.wheel(0, vp["height"] * 1.2)
+            time.sleep(0.8 if new else 1.5)
+        return chosen
+
+    def _click_button(self, name_re, timeout=8_000):
+        btn = self.page.get_by_role("button", name=name_re).first
+        try:
+            btn.wait_for(state="visible", timeout=timeout)
+            btn.click()
+            return True
+        except Exception:
+            return False
+
+    def save_selected(self):
+        """Click "Save photos" for the ticked tiles (and confirm if asked)."""
+        if not self._click_button(SAVE_PHOTOS_RE):
+            return False
+        time.sleep(1.5)
+        dialog = self.page.get_by_role("dialog").last
+        try:
+            if dialog.is_visible():
+                dialog.get_by_role("button", name=CONFIRM_SAVE_RE).last.click(timeout=5_000)
+        except Exception:
+            pass
+        self._settle()
+        return True
+
+    def add_selected_to_album(self, title):
+        """Click "Add to album" for the ticked tiles and pick `title`."""
+        return self._click_button(ADD_TO_ALBUM_RE) and self._pick_album(title)
 
     def save_to_library(self, url):
         """In an album shared with this account: save the photo at `url` into

@@ -223,6 +223,32 @@ forum report says a copy vanished. So v2 adds an **after-deletion audit**:
   confirmed on `From main` before the others; if it's missing, the step
   stops with one warning instead of trying every photo.
 
+**Second real run and read-only probes (2026-11-26):**
+- **Backup account:** a photo opened from the shared album has **no Save
+  button and no "Add to album"**. Its menu only has Slideshow, Download,
+  Order wall art, Order photo prints and Report abuse.
+- **The shared album's page** has **"Save photos"**. With tiles ticked
+  (their `role=checkbox` labels are the same as the tile labels), the
+  toolbar shows **"Add to album"** and "Save photos".
+- So the backup step now works on the album page:
+  1. tick the photos to copy;
+  2. click "Save photos", confirming if a dialog asks;
+  3. tick them again and use "Add to album" → `From main`.
+
+  The first photo goes alone, as a check, then the rest in batches of 50.
+  It's also much faster than one page per photo. The per-photo
+  `save_to_library` / `add_to_album` remain in `gphotos_web.py`;
+  `add_to_album` is still what the main account uses.
+- **A photo has a different ID on the shared album's page than in the
+  timeline.** The photo just added wasn't recognised as being in
+  `_To Backup`, so it was "kept: not in shared album yet" and re-added
+  every run. Membership of `_To Backup` is now decided by key
+  (kind + date-time), with bursts counted, as across accounts.
+  - `_Keep It` membership is now ID **or** key, which can only keep more
+    photos.
+  - The fake site now gives shared-album photos different IDs, so the
+    tests cover this.
+
 ## Downloading photos that are in no album, newer than a date (`takeout_sync.py`)
 
 **Goal:** copy every Google Photos item that is not in any album and was

@@ -194,6 +194,14 @@ def label_key(label):
     return tile_key(*gw.parse_tile_label(label))
 
 
+def album_keys(web, url):
+    """Counter of photo keys on an album's page. Album pages can show a photo
+    under a different ID than the timeline does (seen on the real site for
+    the shared album), so membership is decided by key, not ID."""
+    tiles = web.collect(url, gw.ITEM_LINK, gw.media_id) if url else {}
+    return set(tiles), Counter(label_key(t["label"]) for t in tiles.values())
+
+
 def album_index(web):
     """{title: url} of every album the account has or has joined. Album
     tiles don't carry reliable titles, so each album is opened once."""
@@ -301,25 +309,31 @@ def cmd_run(cfg, args):
                         "Create it and share it with the backup account (see README); "
                         "photos are only copied to the computer until then.")
         keep_url = albums.get(cfg.keep_album)
-        keep_ids = set(main.collect(keep_url, gw.ITEM_LINK, gw.media_id)) if keep_url else set()
+        keep_ids, keep_keys = album_keys(main, keep_url)
         if deletions and not keep_ids:
             deletions = False
             log.problem(f"Album '{cfg.keep_album}' is missing or empty in the main account, so "
                         "the album check can't be self-tested; no deletions this run.")
-        transfer_ids = (set(main.collect(transfer_url, gw.ITEM_LINK, gw.media_id))
-                        if transfer_url else set())
+        transfer_ids, transfer_keys = album_keys(main, transfer_url)
 
         items, undated = v1.scan_main(main, cfg.since)
         c["undated tiles skipped"] = undated
         items = [i for i in items if i["id"] not in state.trashed]
+        for item in items:
+            item["key"] = tile_key(item["kind"], item["taken"])
+            item["label"] = f"{item['taken']:%Y-%m-%d %H:%M} {item['kind']} {item['id'][:14]}…"
+        main_key_n = Counter(i["key"] for i in items)
+
+        def in_transfer(item):
+            # Every main photo with this date-time must be on the album page.
+            return transfer_keys[item["key"]] >= main_key_n[item["key"]]
+
         log(f"Main account: {len(items)} item(s) taken since {cfg.since:%Y-%m-%d}; "
             f"{len(transfer_ids)} in '{cfg.transfer_album}'")
 
         added = False
         for item in items:
             mid = item["id"]
-            item["key"] = tile_key(item["kind"], item["taken"])
-            item["label"] = f"{item['taken']:%Y-%m-%d %H:%M} {item['kind']} {mid[:14]}…"
             rec = state.downloaded.get(mid)
             if not v1.files_intact(rec):
                 if dry:
@@ -334,7 +348,7 @@ def cmd_run(cfg, args):
                     except Exception as e:
                         log.problem(f"download failed for {item['label']}: {e}")
                         continue
-            if not transfer_url or mid in transfer_ids:
+            if not transfer_url or in_transfer(item):
                 continue
             if dry:
                 c["would share"] += 1
@@ -351,7 +365,7 @@ def cmd_run(cfg, args):
         if added:
             # Confirm from the album's own page rather than trusting the clicks.
             before = len(transfer_ids)
-            transfer_ids = set(main.collect(transfer_url, gw.ITEM_LINK, gw.media_id))
+            transfer_ids, transfer_keys = album_keys(main, transfer_url)
             c["shared"] = len(transfer_ids) - before
             log(f"'{cfg.transfer_album}' now has {len(transfer_ids)} item(s)")
 
@@ -380,23 +394,45 @@ def cmd_run(cfg, args):
                 # earlier, which have left the shared album but were copied.
                 wanted = Counter(label_key(t["label"]) for t in tiles.values())
                 wanted.update(r["key"] for r in state.trashed.values() if r.get("key"))
-                tried = defaultdict(list)     # key -> shared tile IDs worked on
-                canary = None                 # first save is confirmed before the rest
+                # Shared tiles still to copy, at most as many per key as missing.
+                need = Counter({k: wanted[k] - backup_counts[k] for k in wanted
+                                if k and wanted[k] > backup_counts[k]})
+                todo = []
                 for tid, t in tiles.items():
                     key = label_key(t["label"])
-                    if not key or tid in state.saved or backup_counts[key] >= wanted[key]:
-                        continue
-                    if dry:
-                        c["would save"] += 1
-                        continue
+                    if key and tid not in state.saved and need[key] > 0:
+                        todo.append((tid, key))
+                        need[key] -= 1
+                tried = defaultdict(list)     # key -> shared tile IDs worked on
+                if dry:
+                    c["would save"] = len(todo)
+                    todo = []
+
+                def copy_batch(batch):
+                    """Tick the batch on the shared album page, "Save photos",
+                    then tick again and "Add to album" -> backup album."""
+                    ids = {tid for tid, _ in batch}
+                    if not backup.select_items(b_shared, ids):
+                        return set()
+                    backup.save_selected()
+                    picked = backup.select_items(b_shared, ids)
+                    if picked and backup.add_selected_to_album(cfg.backup_album):
+                        return picked
+                    return set()
+
+                # The first photo alone, confirmed before the rest (in batches).
+                batches = [todo[:1]] + [todo[i:i + 50] for i in range(1, len(todo), 50)]
+                for n, batch in enumerate(b for b in batches if b):
                     try:
-                        backup.save_to_library(t["url"])
-                        backup.add_to_album(t["url"], cfg.backup_album)
-                        tried[key].append(tid)
+                        done = copy_batch(batch)
                     except Exception as e:
-                        log.problem(f"saving a shared photo ({key}) in the backup account "
-                                    f"failed: {e}")
-                    if canary is None and tried:
+                        log.problem(f"copying shared photos in the backup account failed: {e}")
+                        break
+                    for tid, key in batch:
+                        if tid in done:
+                            tried[key].append(tid)
+                    if n == 0:
+                        key = batch[0][1]
                         canary = Counter(
                             label_key(x["label"])
                             for x in backup.collect(b_own, gw.ITEM_LINK, gw.media_id).values())
@@ -408,6 +444,8 @@ def cmd_run(cfg, args):
                                         "probe` and send the output.")
                             tried.clear()
                             break
+                        log(f"  first copy confirmed on '{cfg.backup_album}'; "
+                            f"{len(todo) - 1} more to copy")
                 if tried:
                     before = backup_counts
                     backup_counts = Counter(
@@ -460,10 +498,10 @@ def cmd_run(cfg, args):
                 if not deletions:
                     break
                 mid, label = item["id"], item["label"]
-                if mid in keep_ids:
+                if mid in keep_ids or keep_keys[item["key"]]:
                     c["kept: in keep album"] += 1
                     continue
-                if not dry and mid not in transfer_ids:
+                if not dry and not in_transfer(item):
                     c["kept: not in shared album yet"] += 1
                     continue
                 if not dry and backup_counts[item["key"]] < main_counts[item["key"]]:
