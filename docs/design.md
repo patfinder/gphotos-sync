@@ -477,3 +477,21 @@ copy would select.
   a different file with the same name gets `_1`, `_2`, ... added. No state
   file is needed.
 - Copy-only unless `--delete` is given. The export itself is never modified.
+
+### Third real run (2026-11-28): the "Add to album" menu
+
+The canary failed again: `'From main' has 0 item(s)`. A step-by-step check on
+the real backup account showed:
+
+- Ticking a tile on the shared album page and clicking **Save photos** works:
+  no confirmation dialog, the selection just clears.
+- With tiles ticked, the toolbar's **Add to album** (the `+` button) does not
+  open the album picker directly. It opens a small menu with one item,
+  **Album**, and that item opens the picker (`New album`, `From main · No
+  items`, `_To Backup · 72 items · Shared`). v2 was looking for the picker
+  straight away, so nothing was added.
+
+Fix: `add_selected_to_album` clicks the **Album** menu item when it appears,
+then picks the album. Each copy step now logs a warning naming the step that
+failed, so the next mismatch is visible from the log alone. Verified on the
+real account: one photo reached `From main` ("1 item added to album").

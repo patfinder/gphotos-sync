@@ -413,12 +413,18 @@ def cmd_run(cfg, args):
                     then tick again and "Add to album" -> backup album."""
                     ids = {tid for tid, _ in batch}
                     if not backup.select_items(b_shared, ids):
+                        log("    couldn't tick the photos on the shared album page", level="warn")
                         return set()
-                    backup.save_selected()
+                    if not backup.save_selected():
+                        log("    no 'Save photos' button after ticking", level="warn")
                     picked = backup.select_items(b_shared, ids)
-                    if picked and backup.add_selected_to_album(cfg.backup_album):
-                        return picked
-                    return set()
+                    if not picked:
+                        log("    couldn't tick the photos again after saving", level="warn")
+                        return set()
+                    if not backup.add_selected_to_album(cfg.backup_album):
+                        log(f"    'Add to album' -> '{cfg.backup_album}' didn't work", level="warn")
+                        return set()
+                    return picked
 
                 # The first photo alone, confirmed before the rest (in batches).
                 batches = [todo[:1]] + [todo[i:i + 50] for i in range(1, len(todo), 50)]

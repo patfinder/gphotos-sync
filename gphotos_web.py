@@ -56,6 +56,9 @@ INFO_DETAILS_RE = re.compile(r"^\s*Details\s*$")
 # Viewer controls used to move items between accounts (gphotos_backup_v2.py).
 ADD_MENU_OPENER_RE = re.compile(r"^More options$", re.I)
 ADD_TO_ALBUM_RE = re.compile(r"^Add to album$", re.I)
+# On a selection, "Add to album" (the + button) opens a small menu whose
+# "Album" item opens the picker.
+ALBUM_MENU_ITEM_RE = re.compile(r"^Album$", re.I)
 ADD_TO_SHARED_ALBUM_RE = re.compile(r"^Add to shared album$", re.I)
 ADD_TO_BUTTON_RE = re.compile(r"^Add to$", re.I)
 ALBUM_KIND_RE = re.compile(r"^(Shared album|Album)$", re.I)
@@ -590,7 +593,16 @@ class PhotosWeb:
 
     def add_selected_to_album(self, title):
         """Click "Add to album" for the ticked tiles and pick `title`."""
-        return self._click_button(ADD_TO_ALBUM_RE) and self._pick_album(title)
+        if not self._click_button(ADD_TO_ALBUM_RE):
+            return False
+        time.sleep(1)
+        item = self.page.get_by_role("menuitem", name=ALBUM_MENU_ITEM_RE).first
+        try:
+            if item.is_visible():
+                item.click(timeout=5_000)
+        except Exception:
+            pass
+        return self._pick_album(title)
 
     def save_to_library(self, url):
         """In an album shared with this account: save the photo at `url` into
